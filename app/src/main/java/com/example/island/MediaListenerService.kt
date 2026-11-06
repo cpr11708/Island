@@ -1,0 +1,401 @@
+package com.example.island
+
+import android.app.Notification
+import android.os.Bundle
+import android.app.PendingIntent
+import android.content.ComponentName
+import android.service.notification.NotificationListenerService
+import android.os.SystemClock
+import android.service.notification.StatusBarNotification
+import android.view.View
+import android.view.ViewGroup
+import android.widget.Chronometer
+import android.widget.FrameLayout
+import android.widget.TextView
+
+/**
+ * Having notification access lets Island do two things:
+ *  - [MediaMonitor] sees which app is playing media.
+ *  - This service reads the phone app's call notification, to show the real caller, the call time and its buttons.
+ * Android starts and stops this service by itself.
+ */
+class MediaListenerService : NotificationListenerService() {
+    private var monitor: MediaMonitor? = null
+
+    override fun onListenerConnected() {
+        IslandBus.mediaStatus = "Listener connected"
+        monitor?.stop()
+        monitor = MediaMonitor(applicationContext, ComponentName(this, MediaListenerService::class.java)).also { it.start() }
+        checkCalls()
+        checkTimers()
+    }
+
+    override fun onListenerDisconnected() {
+        IslandBus.mediaStatus = "Listener disconnected"
+        monitor?.stop()
+        monitor = null
+    }
+
+    override fun onNotificationPosted(sbn: StatusBarNotification) {
+        checkCalls()
+        checkTimers()
+    }
+
+    override fun onNotificationRemoved(sbn: StatusBarNotification) {
+        checkCalls()
+        checkTimers()
+    }
+
+    private fun looksLikeCall(sbn: StatusBarNotification): Boolean {
+        val n = sbn.notification
+        val ex = n.extras
+        val isCallCategory = n.category == Notification.CATEGORY_CALL
+        val hasCallStyle = ex.containsKey("android.callType")
+        val fromDialer = sbn.packageName.contains("dialer") || sbn.packageName.contains("incallui") ||
+                sbn.packageName.contains("telecom")
+        val ongoing = sbn.isOngoing || n.fullScreenIntent != null
+        return (isCallCategory || hasCallStyle) && ongoing && (isCallCategory || fromDialer || hasCallStyle)
+    }
+
+    private fun checkCalls() {
+        val all = try { activeNotifications } catch (_: SecurityException) { null } ?: return
+        IslandBus.callDebug = all
+            .filter { it.notification.category == Notification.CATEGORY_CALL || it.packageName.contains("dialer") }
+            .joinToString("; ") { "${it.packageName} cat=${it.notification.category} ongoing=${it.isOngoing}" }
+            .ifEmpty { "No call notifications seen" }
+
+        val sbn = all.firstOrNull { looksLikeCall(it) }
+        if (sbn == null) {
+            callEnded()
+            return
+        }
+
+        val n = sbn.notification
+        val ex = n.extras
+        val title = ex.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
+        val text = ex.getCharSequence(Notification.EXTRA_TEXT)?.toString().orEmpty()
+        // android.callType: 1 = incoming, 2 = ongoing, 3 = screening. Not every phone app sets it, so also read the text.
+        val type = ex.getInt("android.callType", 0)
+        val incoming = type == 1 || (type == 0 && text.contains("incoming", ignoreCase = true))
+        val chrono = ex.getBoolean(Notification.EXTRA_SHOW_CHRONOMETER)
+        // Without a chronometer, the post time is all there is, but a repost (screen turning on, say) changes it.
+        // So a call that is already being followed keeps the start time it had.
+        val sameCall = IslandBus.callKey == sbn.key && IslandBus.callStartMs > 0L && !IslandBus.callIncoming
+        val start = when {
+            incoming -> 0L
+            chrono -> n.`when`
+            sameCall -> IslandBus.callStartMs
+            else -> sbn.postTime
+        }
+
+        val wanted = Regex("answer|accept|decline|reject|hang|end", RegexOption.IGNORE_CASE)
+        val actions = (n.actions ?: emptyArray())
+            .filter { it.actionIntent != null && !it.title.isNullOrBlank() }
+            .let { list -> list.filter { wanted.containsMatchIn(it.title) }.ifEmpty { list } }
+            .take(2)
+            .map { a ->
+                CallAction(
+                    label = a.title.toString(),
+                    accept = Regex("answer|accept", RegexOption.IGNORE_CASE).containsMatchIn(a.title),
+                    intent = a.actionIntent,
+                )
+            }
+
+        val wasIncoming = IslandBus.callIncoming
+        val isNewCall = IslandBus.callKey != sbn.key
+        IslandBus.callReal = true
+        IslandBus.callKey = sbn.key
+        IslandBus.callName = title
+        IslandBus.callIncoming = incoming
+        IslandBus.callStartMs = start
+        IslandBus.callActions = actions
+        IslandBus.callOpen = n.contentIntent
+
+        if (IslandBus.callDismissedKey == sbn.key) return // swiped away: stays hidden for this call
+        val s = IslandBus.state
+        when {
+            // Ringing: open, so the buttons are right there.
+            incoming -> if (s != IslandState.CallOpen) {
+                IslandBus.autoIdle = false
+                IslandBus.state = IslandState.CallOpen
+            }
+            // Answered: shrink to the compact call.
+            wasIncoming && s == IslandState.CallOpen -> IslandBus.state = IslandState.Call
+            // A new ongoing call, or one that took over from something else.
+            isNewCall || (s != IslandState.Call && s != IslandState.CallOpen) -> {
+                IslandBus.autoIdle = false
+                IslandBus.state = IslandState.Call
+            }
+        }
+    }
+
+    private fun looksLikeTimer(sbn: StatusBarNotification): Boolean {
+        val pkg = sbn.packageName
+        if (!(pkg.contains("deskclock") || pkg.contains("clockpackage"))) return false
+        val ex = sbn.notification.extras
+        val words = ((ex.getCharSequence(Notification.EXTRA_TITLE) ?: "").toString() + " " +
+                (ex.getCharSequence(Notification.EXTRA_TEXT) ?: "")).lowercase()
+        if ("stopwatch" in words) return false
+        return "timer" in words || ex.getBoolean("android.chronometerCountDown")
+    }
+
+    private fun checkTimers() {
+        val all = try { activeNotifications } catch (_: SecurityException) { null } ?: return
+        val sbn = all.firstOrNull { looksLikeTimer(it) }
+        if (sbn == null) {
+            timerEnded()
+            return
+        }
+        if (IslandBus.timerKey != sbn.key) IslandBus.timerKnown = false // a different timer: forget the old time
+        val n = sbn.notification
+        val ex = n.extras
+        val title = ex.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
+        val text = ex.getCharSequence(Notification.EXTRA_TEXT)?.toString().orEmpty()
+        val now = System.currentTimeMillis()
+        val chrono = ex.getBoolean(Notification.EXTRA_SHOW_CHRONOMETER)
+        val countDownFlag = ex.getBoolean("android.chronometerCountDown")
+        val remote = readRemote(n)
+        // Samsung keeps the time and the Pause / Cancel buttons of its Clock notification in "ongoing activity" extras.
+        val ongoingStrings = mutableListOf<String>()
+        val ongoingActions = mutableListOf<CallAction>()
+        for (k in ex.keySet()) if (k.contains("ongoingActivity", ignoreCase = true)) {
+            @Suppress("DEPRECATION")
+            when (val v = ex.get(k)) {
+                is Bundle -> walkBundle(v, k, ongoingStrings, ongoingActions, 0)
+                is CharSequence -> ongoingStrings += "$k=$v"
+                is PendingIntent -> ongoingActions += CallAction(k.substringAfterLast('.'), false, v)
+                else -> ongoingStrings += "$k=${v?.toString()?.take(30)}"
+            }
+        }
+        val timeRe = Regex("^\\s*(\\d{1,2}):(\\d{2})(?::(\\d{2}))?\\s*$")
+        val ongoingMs: Long? = ongoingStrings.firstNotNullOfOrNull { e ->
+            val m = timeRe.find(e.substringAfter('=', ""))
+            m?.let {
+                val a = it.groupValues[1].toLong(); val b = it.groupValues[2].toLong()
+                val c = it.groupValues[3].takeIf { x -> x.isNotEmpty() }?.toLong()
+                (if (c != null) a * 3600 + b * 60 + c else a * 60 + b) * 1000
+            }
+        }
+
+        // Everything text-like in the notification, in case the time is only written out.
+        // Android 16 "promoted" notifications can carry the time as short text shown in the status bar chip.
+        val critical = runCatching {
+            Notification::class.java.getMethod("getShortCriticalText").invoke(n)?.toString()
+        }.getOrNull().orEmpty()
+        @Suppress("DEPRECATION")
+        val extrasDump = ex.keySet().sorted().joinToString(", ") { k -> "$k=${ex.get(k)?.toString()?.take(30)}" }
+
+        val blob = listOf(
+            title, text, critical,
+            ex.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString().orEmpty(),
+            ex.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString().orEmpty(),
+            ex.getCharSequence(Notification.EXTRA_INFO_TEXT)?.toString().orEmpty(),
+            ex.getCharSequence(Notification.EXTRA_SUMMARY_TEXT)?.toString().orEmpty(),
+        ).plus(remote.texts).joinToString(" ")
+
+        IslandBus.timerDebug = "chrono=$chrono countDown=$countDownFlag when-now=${(n.`when` - now) / 1000}s " +
+                "customViews=${n.contentView != null}/${n.bigContentView != null} remoteEnd=${remote.countdownEndMs?.let { (it - now) / 1000 }} " +
+                "ongoing=${ongoingStrings.joinToString(";").take(400)} ongoingActions=${ongoingActions.map { it.label }} critical=[$critical] flags=${n.flags} actions=${n.actions?.map { it.title }} " +
+                "text=[${blob.replace('\n', ' ').take(160)}] extras={${extrasDump.take(700)}}"
+
+        val timeInText = Regex("(\\d+):(\\d{2})(?::(\\d{2}))?").find(blob)
+        // Samsung writes "1 h 20 m / 08:21": the timer's length and the time of day it goes off. The notification's own
+        // time is when the timer started, so start + length is the exact end. The time of day checks it.
+        val endFromText: Long? = Regex("(?:(\\d+)\\s*h)?\\s*(?:(\\d+)\\s*m)?\\s*(?:(\\d+)\\s*s)?\\s*/\\s*(\\d{1,2}):(\\d{2})")
+            .find(blob)?.let { m ->
+                val h = m.groupValues[1].toLongOrNull() ?: 0L
+                val mi = m.groupValues[2].toLongOrNull() ?: 0L
+                val se = m.groupValues[3].toLongOrNull() ?: 0L
+                val lengthMs = ((h * 60 + mi) * 60 + se) * 1000
+                val cal = java.util.Calendar.getInstance().apply {
+                    timeInMillis = now
+                    set(java.util.Calendar.HOUR_OF_DAY, m.groupValues[4].toInt() % 24)
+                    set(java.util.Calendar.MINUTE, m.groupValues[5].toInt())
+                    set(java.util.Calendar.SECOND, 0)
+                    set(java.util.Calendar.MILLISECOND, 0)
+                    if (timeInMillis < now - 60_000) add(java.util.Calendar.DAY_OF_YEAR, 1)
+                }
+                val goesOff = cal.timeInMillis
+                val exact = n.`when` + lengthMs
+                if (lengthMs > 0 && Math.abs(exact - (goesOff + 30_000)) <= 60_000) exact else goesOff + 30_000
+            }
+        IslandBus.timerFromNotification = ongoingMs != null || endFromText != null
+        when {
+            ongoingMs != null -> {
+                val paused = ongoingActions.any { it.label.contains("resume", true) || it.label.contains("start", true) }
+                if (paused) {
+                    IslandBus.timerPausedMs = ongoingMs
+                    IslandBus.timerPaused = true
+                } else {
+                    IslandBus.timerEndMs = System.currentTimeMillis() + ongoingMs
+                    IslandBus.timerPaused = false
+                }
+                IslandBus.timerKnown = true
+            }
+            endFromText != null -> {
+                IslandBus.timerEndMs = endFromText
+                IslandBus.timerPaused = false
+                IslandBus.timerKnown = true
+            }
+            // The normal case: a countdown clock whose end time is the notification's time.
+            chrono && (countDownFlag || n.`when` > now) -> {
+                IslandBus.timerPaused = false
+                IslandBus.timerEndMs = n.`when`
+                IslandBus.timerKnown = true
+            }
+            // Phones whose Clock app draws its own notification layout with a countdown clock inside.
+            remote.countdownEndMs != null -> {
+                IslandBus.timerPaused = false
+                IslandBus.timerEndMs = remote.countdownEndMs
+                IslandBus.timerKnown = true
+            }
+            // Otherwise the time left is only written in the text, like "4:32". Treat it as the time left right now.
+            timeInText != null -> {
+                val a = timeInText.groupValues[1].toLong()
+                val b = timeInText.groupValues[2].toLong()
+                val c = timeInText.groupValues[3].takeIf { it.isNotEmpty() }?.toLong()
+                IslandBus.timerPausedMs = (if (c != null) (a * 3600 + b * 60 + c) else (a * 60 + b)) * 1000
+                IslandBus.timerPaused = true
+                IslandBus.timerKnown = true
+            }
+            // Samsung's Clock leaves the time out of its notification. The accessibility service copies it from the
+            // Clock app or the notification shade when either is on screen, and the island counts down from there.
+            else -> Unit
+        }
+
+        val wanted = Regex("pause|resume|stop|cancel|delete|dismiss|add|reset|start", RegexOption.IGNORE_CASE)
+        IslandBus.timerActions = (ongoingActions.filter { it.intent != null }.takeIf { it.isNotEmpty() }?.take(3)) ?: (n.actions ?: emptyArray())
+            .filter { it.actionIntent != null && !it.title.isNullOrBlank() }
+            .let { list -> list.filter { wanted.containsMatchIn(it.title) }.ifEmpty { list } }
+            .take(3)
+            .map { a -> CallAction(a.title.toString(), false, a.actionIntent) }
+            // No buttons of its own: offer one that opens the Clock app.
+            .ifEmpty { listOfNotNull(n.contentIntent?.let { CallAction("Open", false, it) }) }
+
+        IslandBus.timerOpen = n.contentIntent
+        IslandBus.timerRemotePress = { cmd -> pressRemoteButton(n, cmd) }
+        val isNew = IslandBus.timerKey != sbn.key
+        IslandBus.timerReal = true
+        IslandBus.timerKey = sbn.key
+        IslandBus.timerLabel = title.ifEmpty { "Timer" }
+
+        if (IslandBus.timerDismissedKey == sbn.key) return // swiped away: stays hidden for this timer
+        val s = IslandBus.state
+        // A call comes first; otherwise a new timer takes over from music, charging and so on.
+        // Priority: call > music > timer, so a timer never takes over a call or music (it shows beside them).
+        val busy = s == IslandState.Call || s == IslandState.CallOpen || s == IslandState.Music || s == IslandState.MusicOpen
+        val showing = s == IslandState.Timer || s == IslandState.TimerOpen
+        if (!busy && (isNew || !showing)) {
+            IslandBus.autoIdle = false
+            IslandBus.state = IslandState.Timer
+        }
+    }
+
+    /** Flattens a Bundle: collects its text values, and any button (a PendingIntent plus the text beside it). */
+    private fun walkBundle(b: Bundle, path: String, strings: MutableList<String>, actions: MutableList<CallAction>, depth: Int) {
+        if (depth > 5) return
+        val intents = mutableListOf<Pair<String, PendingIntent>>()
+        var label: String? = null
+        for (k in b.keySet()) {
+            @Suppress("DEPRECATION")
+            val v = b.get(k)
+            when (v) {
+                is CharSequence -> {
+                    strings += "$path.$k=$v"
+                    if (label == null && Regex("title|text|label|name", RegexOption.IGNORE_CASE).containsMatchIn(k)) label = v.toString()
+                }
+                is PendingIntent -> intents += k to v
+                is Bundle -> walkBundle(v, "$path.$k", strings, actions, depth + 1)
+                is Array<*> -> v.forEachIndexed { i, x -> if (x is Bundle) walkBundle(x, "$path.$k[$i]", strings, actions, depth + 1) }
+                is List<*> -> v.forEachIndexed { i, x -> if (x is Bundle) walkBundle(x, "$path.$k[$i]", strings, actions, depth + 1) }
+                else -> if (v != null) strings += "$path.$k=${v.toString().take(30)}"
+            }
+        }
+        for ((k, pi) in intents) actions += CallAction(label ?: k, false, pi)
+    }
+
+    private class Remote(val texts: List<String>, val countdownEndMs: Long?)
+
+    /** Some Clock apps draw the notification themselves. Build that layout to read its text and countdown clock. */
+    private fun readRemote(n: Notification): Remote {
+        val texts = mutableListOf<String>()
+        var end: Long? = null
+        fun walk(x: View) {
+            if (x is Chronometer && x.isCountDown) end = System.currentTimeMillis() + (x.base - SystemClock.elapsedRealtime())
+            if (x is TextView) x.text?.toString()?.takeIf { it.isNotBlank() }?.let { texts += it }
+            if (x is ViewGroup) for (i in 0 until x.childCount) walk(x.getChildAt(i))
+        }
+        for (rv in listOfNotNull(n.bigContentView, n.contentView)) {
+            try {
+                walk(rv.apply(applicationContext, FrameLayout(applicationContext)))
+            } catch (_: Throwable) {
+                // That layout could not be built here: fine, the other sources are tried.
+            }
+        }
+        return Remote(texts, end)
+    }
+
+    /**
+     * Presses a button drawn inside the notification itself (Samsung draws its own layout, so its buttons are not in
+     * the normal action list). Builds the layout, finds a clickable view whose text or description matches, clicks it.
+     */
+    private fun pressRemoteButton(n: Notification, cmd: String): Boolean {
+        val words = if (cmd == "pause") Regex("pause|resume|play|start", RegexOption.IGNORE_CASE)
+        else Regex("cancel|stop|delete|dismiss|reset", RegexOption.IGNORE_CASE)
+        var done = false
+        val seen = mutableListOf<String>()
+        fun label(x: View): String {
+            val parts = mutableListOf<String>()
+            x.contentDescription?.let { parts += it.toString() }
+            if (x is TextView) parts += x.text.toString()
+            return parts.joinToString(" ")
+        }
+        fun walk(x: View) {
+            if (done) return
+            if (x.hasOnClickListeners()) seen += "[" + label(x).take(14) + "]"
+            if (x.hasOnClickListeners() && words.containsMatchIn(label(x))) {
+                done = x.performClick()
+                return
+            }
+            if (x is ViewGroup) for (i in 0 until x.childCount) walk(x.getChildAt(i))
+        }
+        val views = listOfNotNull(n.bigContentView, n.contentView)
+        for (rv in views) {
+            try {
+                walk(rv.apply(applicationContext, FrameLayout(applicationContext)))
+            } catch (t: Throwable) { seen += "error ${t.javaClass.simpleName}" }
+            if (done) break
+        }
+        if (!done) IslandBus.timerCmdDebug = "no button in notification (custom layouts: ${views.size}, clickable: ${seen.joinToString("").ifEmpty { "none" }})"
+        return done
+    }
+
+    private fun timerEnded() {
+        if (!IslandBus.timerReal) return // the demo button's timer is not ours to clear
+        IslandBus.timerReal = false
+        IslandBus.timerKnown = false
+        IslandBus.timerKey = ""
+        IslandBus.timerDismissedKey = null
+        if (IslandBus.state == IslandState.Timer || IslandBus.state == IslandState.TimerOpen) {
+            IslandBus.autoIdle = false
+            IslandBus.state =
+                if (IslandBus.mediaPlaying && IslandBus.mediaTitle.isNotEmpty()) IslandState.Music else IslandState.Idle
+        }
+    }
+
+    private fun callEnded() {
+        if (!IslandBus.callReal) return // the demo button's call is not ours to clear
+        IslandBus.callReal = false
+        IslandBus.callKey = ""
+        IslandBus.callDismissedKey = null
+        IslandBus.callIncoming = false
+        if (IslandBus.state == IslandState.Call || IslandBus.state == IslandState.CallOpen) {
+            IslandBus.autoIdle = false
+            // Back to the music pill if something is still playing, otherwise idle.
+            IslandBus.state = when {
+                // A timer that kept running during the call comes back.
+                else -> IslandBus.restingState()
+            }
+        }
+    }
+}

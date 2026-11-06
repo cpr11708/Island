@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="island_accessibility_description">Lets Island draw above the status bar, so you can touch it in every app. Island does not read your screen.</string>
+</resources>
