@@ -132,6 +132,7 @@ private fun ControlScreen() {
             Text("Notification access granted. Music will show up on its own.")
             Text("Media status: ${IslandBus.mediaStatus}", style = MaterialTheme.typography.bodySmall)
             Text("Calls: ${IslandBus.callDebug}", style = MaterialTheme.typography.bodySmall)
+            Text("Call time: ${IslandBus.callTimeDebug}", style = MaterialTheme.typography.bodySmall)
             Text("Timer notification: ${IslandBus.timerDebug}", style = MaterialTheme.typography.bodySmall)
             Text("Timer chip: ${IslandBus.timerChipDebug}", style = MaterialTheme.typography.bodySmall)
             Text("Timer buttons: ${IslandBus.timerCmdDebug}", style = MaterialTheme.typography.bodySmall)
@@ -154,6 +155,18 @@ private fun ControlScreen() {
         if (!btGranted) {
             Text("To show the name of a Bluetooth device when it connects, allow Bluetooth access.")
             Button(onClick = { btPermission.launch(Manifest.permission.BLUETOOTH_CONNECT) }) { Text("Allow Bluetooth names") }
+        }
+
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            androidx.compose.material3.Switch(
+                checked = IslandBus.privacyEnabled,
+                onCheckedChange = { on ->
+                    IslandBus.privacyEnabled = on
+                    context.getSharedPreferences("island", android.content.Context.MODE_PRIVATE)
+                        .edit().putBoolean("privacy_dots", on).apply()
+                },
+            )
+            Text("Camera and microphone dots")
         }
 
         Text("Try it", style = MaterialTheme.typography.titleMedium)

@@ -92,23 +92,10 @@ internal fun CallOpenContent() {
         // The top row is as tall as the compact island, so the camera sits in its middle: who is calling on the left,
         // the time and a waveform on the right.
         Row(Modifier.fillMaxWidth().height(COMPACT), verticalAlignment = Alignment.CenterVertically) {
-            Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    Modifier.size(28.dp).clip(CircleShape).background(Color(0xFF636366)),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        IslandBus.callName.firstOrNull { it.isLetterOrDigit() }?.uppercase() ?: "#",
-                        color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Medium,
-                    )
-                }
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    IslandBus.callName.ifEmpty { "Unknown" },
-                    color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.SemiBold,
-                    maxLines = 1, overflow = TextOverflow.Ellipsis,
-                )
-            }
+            Text(
+                "Phone",
+                color = CallGray, fontSize = 13.sp, maxLines = 1, modifier = Modifier.weight(1f),
+            )
             Spacer(Modifier.width(IslandBus.camGap))
             Row(Modifier.weight(1f), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
                 Text(
@@ -119,7 +106,24 @@ internal fun CallOpenContent() {
                 Equalizer(true, CallGreen)
             }
         }
-        Spacer(Modifier.weight(1f))
+        // The name gets the whole width under the camera, at a comfortable size.
+        Row(Modifier.fillMaxWidth().weight(1f), verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier.size(42.dp).clip(CircleShape).background(Color(0xFF636366)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    IslandBus.callName.firstOrNull { it.isLetterOrDigit() }?.uppercase() ?: "#",
+                    color = Color.White, fontSize = 19.sp, fontWeight = FontWeight.Medium,
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Text(
+                IslandBus.callName.ifEmpty { "Unknown" },
+                color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.SemiBold,
+                maxLines = 2, overflow = TextOverflow.Ellipsis,
+            )
+        }
         val context = LocalContext.current
         val audio = remember { context.getSystemService(AudioManager::class.java) }
         var muted by remember { mutableStateOf(runCatching { audio.isMicrophoneMute }.getOrDefault(false)) }

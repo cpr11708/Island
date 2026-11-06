@@ -86,12 +86,36 @@ class MediaListenerService : NotificationListenerService() {
         // Without a chronometer, the post time is all there is, but a repost (screen turning on, say) changes it.
         // So a call that is already being followed keeps the start time it had.
         val sameCall = IslandBus.callKey == sbn.key && IslandBus.callStartMs > 0L && !IslandBus.callIncoming
+        // Best source first: a clock inside the notification's own layout, then the notification's chronometer, then the
+        // moment a ringing call turned into a connected one, then the post time.
+        val now = System.currentTimeMillis()
+        val answeredJustNow = IslandBus.callKey == sbn.key && IslandBus.callIncoming && !incoming
+        // Once a call has a start time, it keeps it: a notification's clock restarts whenever it is re-posted, which
+        // made the island's timer start over every few seconds.
+        // The phone app sometimes removes and re-posts its notification when it updates: the same call, a moment later.
+        val resumeStart = if (IslandBus.lastCallStart > 0L && now - IslandBus.lastCallEndedAt < 10_000 &&
+            IslandBus.lastCallName == title) IslandBus.lastCallStart else 0L
+        // The phone app's own notification time ("when") is exactly what its status chip counts from.
+        val whenOk = n.`when` > 0L && now - n.`when` in 0L..(12 * 3600_000L)
         val start = when {
             incoming -> 0L
-            chrono -> n.`when`
+            whenOk -> n.`when`
             sameCall -> IslandBus.callStartMs
+            resumeStart > 0L -> resumeStart
+            answeredJustNow -> now
+            chrono -> n.`when`
             else -> sbn.postTime
         }
+        val usedSource = when {
+            incoming -> "ringing"
+            whenOk -> "notification time (same as the phone's chip)"
+            sameCall -> "kept from the first sighting"
+            resumeStart > 0L -> "kept (notification was re-posted)"
+            answeredJustNow -> "answered now"
+            chrono -> "chronometer"
+            else -> "post time"
+        }
+        IslandBus.callTimeDebug = "used=$usedSource | posted ${(now - sbn.postTime) / 1000}s ago, when ${(now - n.`when`) / 1000}s ago, chronometer=$chrono, type=$type"
 
         val wanted = Regex("answer|accept|decline|reject|hang|end", RegexOption.IGNORE_CASE)
         val actions = (n.actions ?: emptyArray())
@@ -287,6 +311,7 @@ class MediaListenerService : NotificationListenerService() {
         IslandBus.timerLabel = title.ifEmpty { "Timer" }
 
         if (IslandBus.timerDismissedKey == sbn.key) return // swiped away: stays hidden for this timer
+        if (IslandBus.hiddenByApp(IslandState.Timer)) return // inside the Clock: nothing changes
         val s = IslandBus.state
         // A call comes first; otherwise a new timer takes over from music, charging and so on.
         // Priority: call > music > timer, so a timer never takes over a call or music (it shows beside them).
@@ -321,14 +346,17 @@ class MediaListenerService : NotificationListenerService() {
         for ((k, pi) in intents) actions += CallAction(label ?: k, false, pi)
     }
 
-    private class Remote(val texts: List<String>, val countdownEndMs: Long?)
+    private class Remote(val texts: List<String>, val countdownEndMs: Long?, val countUpStartMs: Long? = null)
 
     /** Some Clock apps draw the notification themselves. Build that layout to read its text and countdown clock. */
     private fun readRemote(n: Notification): Remote {
         val texts = mutableListOf<String>()
         var end: Long? = null
+        var up: Long? = null
         fun walk(x: View) {
             if (x is Chronometer && x.isCountDown) end = System.currentTimeMillis() + (x.base - SystemClock.elapsedRealtime())
+            // A count-up chronometer: its base is when it started, i.e. when the call was answered.
+            if (x is Chronometer && !x.isCountDown) up = System.currentTimeMillis() - (SystemClock.elapsedRealtime() - x.base)
             if (x is TextView) x.text?.toString()?.takeIf { it.isNotBlank() }?.let { texts += it }
             if (x is ViewGroup) for (i in 0 until x.childCount) walk(x.getChildAt(i))
         }
@@ -339,7 +367,7 @@ class MediaListenerService : NotificationListenerService() {
                 // That layout could not be built here: fine, the other sources are tried.
             }
         }
-        return Remote(texts, end)
+        return Remote(texts, end, up)
     }
 
     /**
@@ -427,6 +455,7 @@ class MediaListenerService : NotificationListenerService() {
         }.getOrNull()
 
         if (IslandBus.navDismissedKey == sbn.key) return // swiped away: hidden for this trip
+        if (IslandBus.hiddenByApp(IslandState.Nav)) return // inside Maps: nothing changes until you leave
         val s = IslandBus.state
         val busy = s.isTall()
         val showing = s == IslandState.Nav || s == IslandState.NavOpen
@@ -463,6 +492,11 @@ class MediaListenerService : NotificationListenerService() {
 
     private fun callEnded() {
         if (!IslandBus.callReal) return // the demo button's call is not ours to clear
+        if (!IslandBus.callIncoming && IslandBus.callStartMs > 0L) {
+            IslandBus.lastCallStart = IslandBus.callStartMs
+            IslandBus.lastCallName = IslandBus.callName
+            IslandBus.lastCallEndedAt = System.currentTimeMillis()
+        }
         IslandBus.callReal = false
         IslandBus.callKey = ""
         IslandBus.callDismissedKey = null

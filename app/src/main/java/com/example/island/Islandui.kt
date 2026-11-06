@@ -166,6 +166,11 @@ object IslandBus {
     var callName by mutableStateOf("")
     var callIncoming by mutableStateOf(false)
     var callStartMs by mutableLongStateOf(0L)
+    var callTimeDebug by mutableStateOf("")
+    /** The last call that just ended: if its notification comes straight back, it is the same call. */
+    var lastCallStart = 0L
+    var lastCallName = ""
+    var lastCallEndedAt = 0L
     var callActions by mutableStateOf<List<CallAction>>(emptyList())
     var callKey = ""
     var callDismissedKey: String? = null
@@ -270,6 +275,8 @@ object IslandBus {
     var alertReturn = IslandState.Idle
 
     /** The camera / microphone is in use by some app (shows the green / orange dots). */
+    /** The user's switch (in the app) for the dots. Off by default. */
+    var privacyEnabled by mutableStateOf(false)
     var camActive by mutableStateOf(false)
     var micActive by mutableStateOf(false)
 
@@ -575,7 +582,7 @@ private fun IslandState.dims(hole: Hole): DpSize = when (this) {
     IslandState.Alert -> DpSize(190.dp, COMPACT)
     IslandState.Nav -> DpSize(190.dp, COMPACT)
     IslandState.NavOpen -> DpSize(350.dp, 150.dp)
-    IslandState.CallOpen -> DpSize(340.dp, 122.dp)
+    IslandState.CallOpen -> DpSize(350.dp, 156.dp)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -622,7 +629,14 @@ fun IslandRoot(hole: Hole, xShift: Dp, onLayoutWanted: (touchable: Boolean, tall
         split = IslandBus.splitPair(state)
     }
     LaunchedEffect(Unit) {
+        var navWasHidden = false
         while (true) {
+            // Leaving Maps: the navigation island appears now (it was kept out of sight the whole time).
+            val navHidden = IslandBus.hiddenByApp(IslandState.Nav)
+            if (navWasHidden && !navHidden && IslandBus.activeList().contains(IslandState.Nav) && !IslandBus.state.isTall()) {
+                IslandBus.state = IslandState.Nav
+            }
+            navWasHidden = navHidden
             // Inside the app of the pill that is showing: if something else is going, that takes the island.
             val st = IslandBus.state
             if (IslandBus.hiddenByApp(st.base())) {
@@ -820,11 +834,13 @@ fun Island(
     // Camera / microphone dots. They stay a moment after the app stops, so a quick flicker is still readable.
     var privCam by remember { mutableStateOf(false) }
     var privMic by remember { mutableStateOf(false) }
-    LaunchedEffect(IslandBus.camActive) {
-        if (IslandBus.camActive) privCam = true else { delay(1500); privCam = false }
+    val camShow = IslandBus.camActive && IslandBus.privacyEnabled
+    val micShow = IslandBus.micActive && IslandBus.privacyEnabled
+    LaunchedEffect(camShow) {
+        if (camShow) privCam = true else { if (IslandBus.privacyEnabled) delay(1500); privCam = false }
     }
-    LaunchedEffect(IslandBus.micActive) {
-        if (IslandBus.micActive) privMic = true else { delay(1500); privMic = false }
+    LaunchedEffect(micShow) {
+        if (micShow) privMic = true else { if (IslandBus.privacyEnabled) delay(1500); privMic = false }
     }
     val privAnim by animateFloatAsState(
         if (privCam || privMic) 1f else 0f, spring(dampingRatio = 0.7f, stiffness = 380f), label = "privacy",
