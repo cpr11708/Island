@@ -104,10 +104,10 @@ const val HOLD_MS = 600L
 // ---------------------------------------------------------------------------------------------
 
 enum class IslandState {
-    Idle, Charging, ChargingOpen, Timer, TimerOpen, Call, CallOpen, Music, MusicOpen, Alert;
+    Idle, Charging, ChargingOpen, Timer, TimerOpen, Call, CallOpen, Music, MusicOpen, Nav, NavOpen, Alert;
 
     /** Whether the island needs the large overlay window. */
-    fun isTall(): Boolean = this == ChargingOpen || this == TimerOpen || this == MusicOpen || this == CallOpen
+    fun isTall(): Boolean = this == ChargingOpen || this == TimerOpen || this == MusicOpen || this == CallOpen || this == NavOpen
 
     fun tapped(): IslandState = when (this) {
         Charging -> ChargingOpen
@@ -118,6 +118,8 @@ enum class IslandState {
         CallOpen -> Call
         Music -> MusicOpen
         MusicOpen -> Music
+        Nav -> NavOpen
+        NavOpen -> Nav
         else -> this
     }
 }
@@ -267,10 +269,48 @@ object IslandBus {
     var alertKey by mutableIntStateOf(0)
     var alertReturn = IslandState.Idle
 
+    /** The camera / microphone is in use by some app (shows the green / orange dots). */
+    var camActive by mutableStateOf(false)
+    var micActive by mutableStateOf(false)
+
+    // Navigation (Google Maps).
+    var navKey by mutableStateOf("")
+    var navDismissedKey: String? = null
+    var navReal = false
+    var navTitle by mutableStateOf("")
+    var navText by mutableStateOf("")
+    var navSub by mutableStateOf("")
+    var navMore by mutableStateOf("")
+    var navDistance by mutableStateOf("")
+    var navIcon by mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null)
+    var navActions by mutableStateOf<List<CallAction>>(emptyList())
+    var navOpen: android.app.PendingIntent? = null
+    var navDebug by mutableStateOf("")
+    const val MAPS_PACKAGE = "com.google.android.apps.maps"
+
+    fun demoNav() {
+        navReal = false
+        navKey = "demo"
+        navDismissedKey = null
+        navTitle = "Turn left onto Main St"
+        navText = "Then turn right in 0.4 mi"
+        navSub = "Arrive 3:47 PM"
+        navMore = "14 min · 5.2 mi"
+        navDistance = "800 ft"
+        navIcon = null
+        navActions = listOf(CallAction("End", false, null))
+        state = IslandState.Nav
+    }
+
+    fun demoNavPress() {
+        navKey = ""
+        if (state == IslandState.Nav || state == IslandState.NavOpen) state = restingState()
+    }
+
     fun alert(icon: String, text: String, color: Color) {
         val s = state
         val ok = s == IslandState.Idle || s == IslandState.Charging || s == IslandState.Music ||
-                s == IslandState.Timer || s == IslandState.Call || s == IslandState.Alert
+                s == IslandState.Timer || s == IslandState.Call || s == IslandState.Nav || s == IslandState.Alert
         if (!ok) return
         if (s != IslandState.Alert) alertReturn = s
         alertIcon = icon
@@ -302,6 +342,7 @@ object IslandBus {
         IslandState.Call -> IslandState.CallOpen
         IslandState.Timer -> IslandState.TimerOpen
         IslandState.Music -> IslandState.MusicOpen
+        IslandState.Nav -> IslandState.NavOpen
         else -> state
     }
 
@@ -325,6 +366,7 @@ object IslandBus {
             IslandState.Call -> callDismissedKey = callKey
             IslandState.Timer -> timerDismissedKey = timerKey
             IslandState.Music -> mediaHiddenTitle = mediaTitle
+            IslandState.Nav -> navDismissedKey = navKey
             else -> Unit
         }
         // If the dismissed one was the focused one, the other takes over; otherwise nothing else changes.
@@ -334,15 +376,32 @@ object IslandBus {
         splitSecondary = null
     }
 
-    /** Persistent activities that are going, highest priority first: Call > Music > Timer (navigation not built yet). */
-    fun activeList(): List<IslandState> {
-        val inMediaApp = mediaPackage.isNotEmpty() && foregroundPackage == mediaPackage
-        return listOf(
-            IslandState.Call to (callReal && callDismissedKey != callKey),
-            IslandState.Music to (mediaLive && mediaTitle.isNotEmpty() && !inMediaApp && mediaHiddenTitle != mediaTitle),
-            IslandState.Timer to (timerKey.isNotEmpty() && timerDismissedKey != timerKey),
-        ).filter { it.second }.map { it.first }
+    var callPackage = ""
+    var timerPackage = ""
+
+    private fun dialerish(p: String) = listOf("incallui", "dialer", "telecom").any { p.contains(it) }
+
+    /** True while you are inside the app a pill belongs to (the music app, Maps, Clock, the phone app): it stays out of the way. */
+    fun hiddenByApp(kind: IslandState): Boolean {
+        val fg = foregroundPackage
+        if (fg.isEmpty()) return false
+        return when (kind) {
+            IslandState.Music -> mediaPackage.isNotEmpty() && fg == mediaPackage
+            IslandState.Nav -> fg == MAPS_PACKAGE
+            IslandState.Timer -> fg == timerPackage || fg == "com.sec.android.app.clockpackage" ||
+                    fg == "com.google.android.deskclock" || fg == "com.android.deskclock"
+            IslandState.Call -> (callPackage.isNotEmpty() && fg == callPackage) || (dialerish(fg) && dialerish(callPackage))
+            else -> false
+        }
     }
+
+    /** Persistent activities that are going, highest priority first: Navigation > Call > Music > Timer. */
+    fun activeList(): List<IslandState> = listOf(
+        IslandState.Nav to (navKey.isNotEmpty() && navDismissedKey != navKey),
+        IslandState.Call to (callReal && callDismissedKey != callKey),
+        IslandState.Music to (mediaLive && mediaTitle.isNotEmpty() && mediaHiddenTitle != mediaTitle),
+        IslandState.Timer to (timerKey.isNotEmpty() && timerDismissedKey != timerKey),
+    ).filter { it.second && !hiddenByApp(it.first) }.map { it.first }
 
     /** What the island rests on once a short pop-up (charging, an alert) is over. */
     fun restingState(): IslandState = activeList().firstOrNull() ?: IslandState.Idle
@@ -356,9 +415,10 @@ object IslandBus {
             IslandState.Call, IslandState.CallOpen -> IslandState.Call
             IslandState.Timer, IslandState.TimerOpen -> IslandState.Timer
             IslandState.Music, IslandState.MusicOpen -> IslandState.Music
+            IslandState.Nav, IslandState.NavOpen -> IslandState.Nav
             else -> return null
         }
-        val order = listOf(IslandState.Call, IslandState.Music, IslandState.Timer)
+        val order = listOf(IslandState.Nav, IslandState.Call, IslandState.Music, IslandState.Timer)
         var list = activeList()
         if (base !in list) list = (list + base).sortedBy { order.indexOf(it) }
         if (list.size < 2) return null
@@ -407,6 +467,15 @@ object IslandBus {
                     }
                 }
             }
+            IslandState.Nav -> {
+                val ok = navOpen?.let { sendPI(it) } ?: false
+                val ctx = appContext
+                if (!ok && ctx != null) {
+                    ctx.packageManager.getLaunchIntentForPackage(MAPS_PACKAGE)?.let {
+                        runCatching { ctx.startActivity(it.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)) }
+                    }
+                }
+            }
             IslandState.Timer -> openClock()
             else -> Unit
         }
@@ -451,6 +520,7 @@ object IslandBus {
         if (state == IslandState.Call || state == IslandState.CallOpen) callDismissedKey = callKey
         if (state == IslandState.Timer || state == IslandState.TimerOpen) timerDismissedKey = timerKey
         if (state == IslandState.Music || state == IslandState.MusicOpen) mediaHiddenTitle = mediaTitle
+        if (state == IslandState.Nav || state == IslandState.NavOpen) navDismissedKey = navKey
         state = IslandState.Idle
     }
 
@@ -460,7 +530,8 @@ object IslandBus {
         when (state) {
             IslandState.Idle -> Unit
             // Music and calls stay until you swipe them away. An outside touch only closes the expanded player.
-            IslandState.Music, IslandState.Call, IslandState.Timer -> Unit
+            IslandState.Music, IslandState.Call, IslandState.Timer, IslandState.Nav -> Unit
+            IslandState.NavOpen -> state = IslandState.Nav
             // An open timer closes to the compact timer, unless it has finished (you need the Stop button).
             IslandState.TimerOpen -> if (timerRemainingMs() > 0 || timerPaused) state = IslandState.Timer
             // An open call closes to the compact call, except while it is still ringing (you need the buttons).
@@ -502,6 +573,8 @@ private fun IslandState.dims(hole: Hole): DpSize = when (this) {
     IslandState.TimerOpen -> DpSize(340.dp, 104.dp)
     IslandState.Call -> DpSize(190.dp, COMPACT)
     IslandState.Alert -> DpSize(190.dp, COMPACT)
+    IslandState.Nav -> DpSize(190.dp, COMPACT)
+    IslandState.NavOpen -> DpSize(350.dp, 150.dp)
     IslandState.CallOpen -> DpSize(340.dp, 122.dp)
 }
 
@@ -518,9 +591,8 @@ fun IslandRoot(hole: Hole, xShift: Dp, onLayoutWanted: (touchable: Boolean, tall
     val view = LocalView.current
     // While you are inside the app the music comes from (Spotify, say), the player stays out of the way. It is only
     // hidden from view: it comes back by itself when you leave that app.
-    val inMediaApp = IslandBus.mediaPackage.isNotEmpty() && IslandBus.foregroundPackage == IslandBus.mediaPackage
     val state = IslandBus.state.let {
-        if (inMediaApp && (it == IslandState.Music || it == IslandState.MusicOpen)) IslandState.Idle else it
+        if (IslandBus.hiddenByApp(it.base())) IslandState.Idle else it
     }
     var first by remember { mutableStateOf(true) }
     LaunchedEffect(state) {
@@ -551,6 +623,12 @@ fun IslandRoot(hole: Hole, xShift: Dp, onLayoutWanted: (touchable: Boolean, tall
     }
     LaunchedEffect(Unit) {
         while (true) {
+            // Inside the app of the pill that is showing: if something else is going, that takes the island.
+            val st = IslandBus.state
+            if (IslandBus.hiddenByApp(st.base())) {
+                val r = IslandBus.restingState()
+                if (r != IslandState.Idle) IslandBus.state = r
+            }
             split = IslandBus.splitPair(stateNow)
             delay(400)
         }
@@ -584,6 +662,9 @@ fun IslandRoot(hole: Hole, xShift: Dp, onLayoutWanted: (touchable: Boolean, tall
                 // Swiping a real call away hides it for the rest of that call.
                 if (IslandBus.state == IslandState.Call || IslandBus.state == IslandState.CallOpen) {
                     IslandBus.callDismissedKey = IslandBus.callKey
+                }
+                if (IslandBus.state == IslandState.Nav || IslandBus.state == IslandState.NavOpen) {
+                    IslandBus.navDismissedKey = IslandBus.navKey
                 }
                 if (IslandBus.state == IslandState.Timer || IslandBus.state == IslandState.TimerOpen) {
                     IslandBus.timerDismissedKey = IslandBus.timerKey
@@ -669,6 +750,7 @@ private fun IslandState.base(): IslandState = when (this) {
     IslandState.Call, IslandState.CallOpen -> IslandState.Call
     IslandState.Timer, IslandState.TimerOpen -> IslandState.Timer
     IslandState.Music, IslandState.MusicOpen -> IslandState.Music
+    IslandState.Nav, IslandState.NavOpen -> IslandState.Nav
     else -> this
 }
 
@@ -695,7 +777,7 @@ fun Island(
     onBounds: (Rect) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-    val splitOn = split != null && splitLeft != null && (state == IslandState.Timer || state == IslandState.Music || state == IslandState.Call)
+    val splitOn = split != null && splitLeft != null && (state == IslandState.Timer || state == IslandState.Music || state == IslandState.Call || state == IslandState.Nav)
     // Split: the main pill hugs the camera (its content on the left, the camera at its right end), and the second
     // activity is a small separate pill on the right. So it reads as two items, not three.
     val camD = if (hole.real) hole.diameter else 24.dp
@@ -734,6 +816,20 @@ fun Island(
     var ghostKind by remember { mutableStateOf<IslandState?>(null) }
     var bubblePhase by remember { mutableStateOf(false) }
     val phaseScope = rememberCoroutineScope()
+
+    // Camera / microphone dots. They stay a moment after the app stops, so a quick flicker is still readable.
+    var privCam by remember { mutableStateOf(false) }
+    var privMic by remember { mutableStateOf(false) }
+    LaunchedEffect(IslandBus.camActive) {
+        if (IslandBus.camActive) privCam = true else { delay(1500); privCam = false }
+    }
+    LaunchedEffect(IslandBus.micActive) {
+        if (IslandBus.micActive) privMic = true else { delay(1500); privMic = false }
+    }
+    val privAnim by animateFloatAsState(
+        if (privCam || privMic) 1f else 0f, spring(dampingRatio = 0.7f, stiffness = 380f), label = "privacy",
+    )
+    val privExtra = 20f // dp the dots pill reaches past the camera's right edge
     val prev = remember { IslandPrev() }
     val splitNow by rememberUpdatedState(split)
     val splitLeftNow by rememberUpdatedState(splitLeft)
@@ -866,6 +962,7 @@ fun Island(
     val glowColor = when (state) {
         IslandState.Music, IslandState.MusicOpen -> IslandBus.mediaAccent
         IslandState.Timer, IslandState.TimerOpen -> Color(0xFFFF9F0A)
+        IslandState.Nav, IslandState.NavOpen -> Color(0xFF0A84FF)
         IslandState.Call, IslandState.CallOpen, IslandState.Charging, IslandState.ChargingOpen -> Color(0xFF30D158)
         else -> Color.White
     }
@@ -890,7 +987,8 @@ fun Island(
     val widthDp = (r - l).coerceAtLeast(1f)
     val centre = (l + r) / 2
     val corner = minOf(h / 2, OPEN_CORNER.value).dp
-    val ext = maxOf(-l, r, if (bubbleAlpha.value > 0.01f) rightExt.value else 0f)
+    val privOn = privAnim > 0.01f
+    val ext = maxOf(-l, r, if (bubbleAlpha.value > 0.01f) rightExt.value else 0f, if (privOn) camD.value / 2 + 4f + privExtra else 0f)
     // Squishing keeps the top edge and the camera covered: it pivots on the camera and the top, and never gets
     // shorter than what is needed to hide the camera.
     val neededH = COMPACT.value / 2 + camD.value / 2 + 2f
@@ -901,7 +999,7 @@ fun Island(
     Box(
         modifier
             .offset { IntOffset(xShift.roundToPx(), (top.value.dp - TOUCH_PAD).roundToPx()) }
-            .size((2 * ext).dp + TOUCH_PAD * 2, h.dp + TOUCH_PAD * 2)
+            .size((2 * ext).dp + TOUCH_PAD * 2, (if (privOn) maxOf(h, COMPACT.value) else h).dp + TOUCH_PAD * 2)
             .onGloballyPositioned { onBounds(it.boundsInRoot()) }
             .islandGestures(),
         contentAlignment = Alignment.TopCenter,
@@ -968,12 +1066,35 @@ fun Island(
                             IslandState.TimerOpen -> TimerOpenContent()
                             IslandState.Call -> CallCompact()
                             IslandState.CallOpen -> CallOpenContent()
+                            IslandState.Nav -> NavCompact()
+                            IslandState.NavOpen -> NavOpenContent()
                             IslandState.Music -> MusicCompact()
                             IslandState.MusicOpen -> MusicOpen()
                             IslandState.Alert -> AlertCompact()
                         }
                     }
                 }
+            }
+        }
+        // The camera / microphone pill: grows out of the hole to the right, green dot on top (camera), orange below (mic).
+        if (privOn) {
+            val pl = -(camD.value / 2 + 4f)
+            val pr = camD.value / 2 + 4f + privExtra * privAnim
+            val dy = compactTop.value - top.value
+            if (!state.isTall()) {
+                Box(
+                    Modifier.padding(top = TOUCH_PAD).offset(x = ((pl + pr) / 2).dp, y = dy.dp)
+                        .size((pr - pl).dp, COMPACT)
+                        .clip(RoundedCornerShape(COMPACT / 2)).background(Color.Black),
+                ) {
+                    PrivacyDots(privCam, privMic, Modifier.align(Alignment.CenterEnd).padding(end = 7.dp))
+                }
+            } else {
+                // Open island: just the dots, in its top right corner.
+                PrivacyDots(
+                    privCam, privMic,
+                    Modifier.padding(top = TOUCH_PAD + 14.dp).offset(x = (r - 16f).dp),
+                )
             }
         }
         // The small second pill.
@@ -1001,6 +1122,15 @@ fun Island(
 // ---------------------------------------------------------------------------------------------
 // Contents
 // ---------------------------------------------------------------------------------------------
+
+/** The privacy dots: green for the camera (top), orange for the microphone (below). One alone sits in the middle. */
+@Composable
+private fun PrivacyDots(cam: Boolean, mic: Boolean, modifier: Modifier) {
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(3.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        if (cam) Box(Modifier.size(7.dp).clip(CircleShape).background(Color(0xFF30D158)))
+        if (mic) Box(Modifier.size(7.dp).clip(CircleShape).background(Color(0xFFFF9F0A)))
+    }
+}
 
 private val Green = Color(0xFF30D158)
 private val Red = Color(0xFFFF453A)

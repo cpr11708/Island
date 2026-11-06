@@ -6,7 +6,11 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.hardware.camera2.CameraManager
 import android.media.AudioManager
+import android.media.AudioRecordingConfiguration
+import android.os.Handler
+import android.os.Looper
 import androidx.compose.ui.graphics.Color
 import androidx.core.content.ContextCompat
 
@@ -53,7 +57,34 @@ class SystemEventMonitor(private val context: Context) {
         }
     }
 
+    // Camera: Android tells every app when a camera becomes busy or free. Microphone: it reports active recordings.
+    private val handler = Handler(Looper.getMainLooper())
+    private val busyCameras = mutableSetOf<String>()
+    private val cameraCallback = object : CameraManager.AvailabilityCallback() {
+        override fun onCameraUnavailable(cameraId: String) {
+            busyCameras += cameraId
+            IslandBus.camActive = true
+        }
+        override fun onCameraAvailable(cameraId: String) {
+            busyCameras -= cameraId
+            IslandBus.camActive = busyCameras.isNotEmpty()
+        }
+    }
+    private val micCallback = object : AudioManager.AudioRecordingCallback() {
+        override fun onRecordingConfigChanged(configs: MutableList<AudioRecordingConfiguration>) {
+            IslandBus.micActive = configs.any { !it.isClientSilenced }
+        }
+    }
+
     fun start() {
+        runCatching {
+            context.getSystemService(CameraManager::class.java).registerAvailabilityCallback(cameraCallback, handler)
+        }
+        runCatching {
+            val am = context.getSystemService(AudioManager::class.java)
+            am.registerAudioRecordingCallback(micCallback, handler)
+            IslandBus.micActive = am.activeRecordingConfigurations.any { !it.isClientSilenced }
+        }
         val filter = IntentFilter().apply {
             addAction(AudioManager.RINGER_MODE_CHANGED_ACTION)
             addAction(NotificationManager.ACTION_INTERRUPTION_FILTER_CHANGED)
@@ -65,6 +96,11 @@ class SystemEventMonitor(private val context: Context) {
     }
 
     fun stop() {
+        runCatching { context.getSystemService(CameraManager::class.java).unregisterAvailabilityCallback(cameraCallback) }
+        runCatching { context.getSystemService(AudioManager::class.java).unregisterAudioRecordingCallback(micCallback) }
+        busyCameras.clear()
+        IslandBus.camActive = false
+        IslandBus.micActive = false
         runCatching { context.unregisterReceiver(receiver) }
     }
 

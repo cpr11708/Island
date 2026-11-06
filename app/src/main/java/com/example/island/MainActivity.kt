@@ -136,6 +136,8 @@ private fun ControlScreen() {
             Text("Timer chip: ${IslandBus.timerChipDebug}", style = MaterialTheme.typography.bodySmall)
             Text("Timer buttons: ${IslandBus.timerCmdDebug}", style = MaterialTheme.typography.bodySmall)
             Text("Last tap: ${IslandBus.tapDebug}", style = MaterialTheme.typography.bodySmall)
+            Text("Maps: ${IslandBus.navDebug}", style = MaterialTheme.typography.bodySmall)
+            Text("Camera in use: ${IslandBus.camActive}, microphone in use: ${IslandBus.micActive}", style = MaterialTheme.typography.bodySmall)
             Text("App in front: ${IslandBus.foregroundPackage.ifEmpty { "(none seen yet)" }}, music app: ${IslandBus.mediaPackage.ifEmpty { "(none)" }}", style = MaterialTheme.typography.bodySmall)
         }
 
@@ -159,6 +161,11 @@ private fun ControlScreen() {
             Button(onClick = { IslandBus.state = IslandState.Charging }) { Text("Charging") }
             Button(onClick = { IslandBus.demoTimer() }) { Text("Timer") }
             Button(onClick = { IslandBus.state = IslandState.Music }) { Text("Music") }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Button(onClick = { IslandBus.demoNav() }) { Text("Nav") }
+            Button(onClick = { IslandBus.camActive = !IslandBus.camActive }) { Text("Cam") }
+            Button(onClick = { IslandBus.micActive = !IslandBus.micActive }) { Text("Mic") }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Button(onClick = { IslandBus.demoCall() }) { Text("Call") }

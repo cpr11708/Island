@@ -83,6 +83,14 @@ internal fun MiniActivity(kind: IslandState) {
                     color = MiniOrange, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
                 )
             }
+            IslandState.Nav, IslandState.NavOpen -> {
+                NavIcon(Modifier.size(13.dp))
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    IslandBus.navDistance.ifEmpty { IslandBus.navTitle.take(7) },
+                    color = Color(0xFF0A84FF), fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
+                )
+            }
             else -> Unit
         }
     }

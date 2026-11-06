@@ -12,6 +12,8 @@ import android.view.ViewGroup
 import android.widget.Chronometer
 import android.widget.FrameLayout
 import android.widget.TextView
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.core.graphics.drawable.toBitmap
 
 /**
  * Having notification access lets Island do two things:
@@ -28,6 +30,7 @@ class MediaListenerService : NotificationListenerService() {
         monitor = MediaMonitor(applicationContext, ComponentName(this, MediaListenerService::class.java)).also { it.start() }
         checkCalls()
         checkTimers()
+        checkNav()
     }
 
     override fun onListenerDisconnected() {
@@ -39,11 +42,13 @@ class MediaListenerService : NotificationListenerService() {
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         checkCalls()
         checkTimers()
+        checkNav()
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
         checkCalls()
         checkTimers()
+        checkNav()
     }
 
     private fun looksLikeCall(sbn: StatusBarNotification): Boolean {
@@ -105,6 +110,7 @@ class MediaListenerService : NotificationListenerService() {
         val isNewCall = IslandBus.callKey != sbn.key
         IslandBus.callReal = true
         IslandBus.callKey = sbn.key
+        IslandBus.callPackage = sbn.packageName
         IslandBus.callName = title
         IslandBus.callIncoming = incoming
         IslandBus.callStartMs = start
@@ -277,6 +283,7 @@ class MediaListenerService : NotificationListenerService() {
         val isNew = IslandBus.timerKey != sbn.key
         IslandBus.timerReal = true
         IslandBus.timerKey = sbn.key
+        IslandBus.timerPackage = sbn.packageName
         IslandBus.timerLabel = title.ifEmpty { "Timer" }
 
         if (IslandBus.timerDismissedKey == sbn.key) return // swiped away: stays hidden for this timer
@@ -368,6 +375,77 @@ class MediaListenerService : NotificationListenerService() {
         }
         if (!done) IslandBus.timerCmdDebug = "no button in notification (custom layouts: ${views.size}, clickable: ${seen.joinToString("").ifEmpty { "none" }})"
         return done
+    }
+
+    private val distanceRe = Regex("(\\d+(?:[.,]\\d+)?)\\s?(ft|feet|mi|miles|m|km|yd|yards)\\b", RegexOption.IGNORE_CASE)
+
+    /** Google Maps' ongoing navigation notification: the next turn, the distance, the trip summary. */
+    private fun checkNav() {
+        val all = try { activeNotifications } catch (_: SecurityException) { null } ?: return
+        val maps = all.filter { it.packageName == IslandBus.MAPS_PACKAGE }
+        IslandBus.navDebug = maps.joinToString("; ") {
+            val ex = it.notification.extras
+            "cat=${it.notification.category} ongoing=${it.isOngoing} title=${ex.getCharSequence(Notification.EXTRA_TITLE)} " +
+                    "text=${ex.getCharSequence(Notification.EXTRA_TEXT)} sub=${ex.getCharSequence(Notification.EXTRA_SUB_TEXT)} " +
+                    "big=${ex.getCharSequence(Notification.EXTRA_BIG_TEXT)} info=${ex.getCharSequence(Notification.EXTRA_INFO_TEXT)} " +
+                    "summary=${ex.getCharSequence(Notification.EXTRA_SUMMARY_TEXT)} keys=${ex.keySet().filter { k -> k.startsWith("android.t") || k.startsWith("android.s") || k.startsWith("android.i") || k.startsWith("android.b") }}"
+        }.ifEmpty { "No Google Maps notifications seen" }
+
+        fun str(sbn: StatusBarNotification, key: String) = sbn.notification.extras.getCharSequence(key)?.toString().orEmpty()
+        val sbn = maps.firstOrNull { it.isOngoing && it.notification.category == Notification.CATEGORY_NAVIGATION }
+        // Not marked as navigation: an ongoing Maps notification that talks about a distance is still navigation.
+            ?: maps.firstOrNull {
+                it.isOngoing && distanceRe.containsMatchIn(
+                    str(it, Notification.EXTRA_TITLE) + " " + str(it, Notification.EXTRA_TEXT) + " " + str(it, Notification.EXTRA_SUB_TEXT),
+                )
+            }
+        if (sbn == null) {
+            navEnded()
+            return
+        }
+        val n = sbn.notification
+        val title = str(sbn, Notification.EXTRA_TITLE)
+        val text = str(sbn, Notification.EXTRA_TEXT)
+        val sub = str(sbn, Notification.EXTRA_SUB_TEXT).ifEmpty { str(sbn, Notification.EXTRA_INFO_TEXT) }
+        val isNew = IslandBus.navKey != sbn.key
+        IslandBus.navReal = true
+        IslandBus.navKey = sbn.key
+        IslandBus.navTitle = title
+        IslandBus.navText = text
+        IslandBus.navSub = sub
+        // Everything else Maps says (a longer text, the trip summary), shown in the expanded view.
+        IslandBus.navMore = listOf(Notification.EXTRA_BIG_TEXT, Notification.EXTRA_INFO_TEXT, Notification.EXTRA_SUMMARY_TEXT)
+            .map { str(sbn, it) }.filter { it.isNotBlank() && it != text && it != title && it != sub }.distinct().joinToString("\n")
+        IslandBus.navDistance = distanceRe.find("$title $text")?.value?.replace(" ", "") ?: ""
+        IslandBus.navOpen = n.contentIntent
+        IslandBus.navActions = (n.actions ?: emptyArray())
+            .filter { it.actionIntent != null && !it.title.isNullOrBlank() }
+            .take(1)
+            .map { CallAction(it.title.toString(), false, it.actionIntent) }
+        IslandBus.navIcon = runCatching {
+            n.getLargeIcon()?.loadDrawable(applicationContext)?.toBitmap(96, 96)?.asImageBitmap()
+        }.getOrNull()
+
+        if (IslandBus.navDismissedKey == sbn.key) return // swiped away: hidden for this trip
+        val s = IslandBus.state
+        val busy = s.isTall()
+        val showing = s == IslandState.Nav || s == IslandState.NavOpen
+        if (!busy && (isNew || !showing)) {
+            IslandBus.autoIdle = false
+            IslandBus.state = IslandState.Nav
+        }
+    }
+
+    private fun navEnded() {
+        if (!IslandBus.navReal) return // the demo's navigation is not ours to clear
+        IslandBus.navReal = false
+        IslandBus.navKey = ""
+        IslandBus.navDismissedKey = null
+        IslandBus.navIcon = null
+        if (IslandBus.state == IslandState.Nav || IslandBus.state == IslandState.NavOpen) {
+            IslandBus.autoIdle = false
+            IslandBus.state = IslandBus.restingState()
+        }
     }
 
     private fun timerEnded() {
