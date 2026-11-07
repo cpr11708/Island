@@ -1,1 +1,60 @@
+name: Build APK
 
+# Builds the app whenever you push a tag like v1.0, and attaches the APK to a GitHub Release.
+# You can also run it by hand from the Actions tab to get a test APK.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      # Optional: sign with your own key, so every release has the same signature and installs as an update.
+      # Add these secrets in the repository settings (see the README): KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS.
+      - name: Sign with your key (if set up)
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk Island.apk
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > release.keystore
+            BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+            "$BT/apksigner" sign --ks release.keystore --ks-key-alias "$KEY_ALIAS" \
+              --ks-pass env:KEYSTORE_PASSWORD --key-pass env:KEYSTORE_PASSWORD Island.apk
+            rm release.keystore
+          else
+            echo "No signing key set up: using the standard debug signature."
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Island
+          path: Island.apk
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Island.apk
+          generate_release_notes: true
