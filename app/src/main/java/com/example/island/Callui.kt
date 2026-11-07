@@ -2,6 +2,15 @@ package com.example.island
 
 import android.media.AudioManager
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.runtime.withFrameNanos
+import kotlin.math.abs
+import kotlin.math.sin
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -82,7 +91,7 @@ internal fun CallCompact() {
                 color = CallGreen, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
             )
         }
-        Equalizer(true, CallGreen)
+        CallWave()
     }
 }
 
@@ -105,7 +114,7 @@ internal fun CallOpenContent() {
                     color = CallGray, fontSize = 17.sp, fontWeight = FontWeight.Medium, maxLines = 1,
                 )
                 Spacer(Modifier.width(10.dp))
-                Equalizer(true, CallGreen)
+                CallWave()
             }
         }
         // The name gets the whole width under the camera, at a comfortable size.
@@ -175,6 +184,48 @@ internal fun CallOpenContent() {
                     Text(action.label, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
                 }
             }
+        }
+    }
+}
+
+
+/**
+ * The iPhone's call waveform: many thin bars that fade from green on the left to orange on the right, bouncing
+ * like a voice. Android doesn't let an app hear the call, so the movement is simulated.
+ */
+@Composable
+internal fun CallWave() {
+    var time by remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(Unit) {
+        var last = withFrameNanos { it }
+        while (true) {
+            val now = withFrameNanos { it }
+            time += (now - last) / 1_000_000_000f
+            last = now
+        }
+    }
+    val green = Color(0xFF32D74B)
+    val orange = Color(0xFFFF9F0A)
+    Canvas(Modifier.size(56.dp, 20.dp)) {
+        val bars = 20
+        val barW = 1.8.dp.toPx()
+        val gap = (size.width - bars * barW) / (bars - 1)
+        val brush = Brush.horizontalGradient(listOf(green, Color(0xFFD7E02C), orange), 0f, size.width)
+        // Like speech, the whole wave swells and settles in bursts.
+        val burst = 0.55f + 0.45f * abs(sin(time * 2.1f) * sin(time * 0.83f + 1f))
+        for (i in 0 until bars) {
+            val a = sin(time * (5.2f + (i % 5) * 1.3f) + i * 1.7f)
+            val b = sin(time * (9.1f - (i % 4) * 1.1f) + i * 2.9f)
+            val v = 0.5f + 0.5f * (0.6f * a + 0.4f * b)
+            // Smaller at both ends, bigger in the middle.
+            val edge = 0.45f + 0.55f * sin(Math.PI.toFloat() * (i + 0.5f) / bars)
+            val h = barW + (size.height - barW) * (0.12f + 0.88f * v) * edge * burst
+            drawRoundRect(
+                brush,
+                Offset(i * (barW + gap), (size.height - h) / 2f),
+                Size(barW, h),
+                CornerRadius(barW / 2f),
+            )
         }
     }
 }
