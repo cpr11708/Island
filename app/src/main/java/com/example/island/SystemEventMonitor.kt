@@ -78,6 +78,7 @@ class SystemEventMonitor(private val context: Context) {
 
     fun start() {
         IslandBus.privacyEnabled = context.getSharedPreferences("island", Context.MODE_PRIVATE).getBoolean("privacy_dots", false)
+        IslandBus.lockPlayer = context.getSharedPreferences("island", Context.MODE_PRIVATE).getBoolean("lock_player", true)
         runCatching {
             context.getSystemService(CameraManager::class.java).registerAvailabilityCallback(cameraCallback, handler)
         }

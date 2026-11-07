@@ -81,7 +81,10 @@ class MediaListenerService : NotificationListenerService() {
         val text = ex.getCharSequence(Notification.EXTRA_TEXT)?.toString().orEmpty()
         // android.callType: 1 = incoming, 2 = ongoing, 3 = screening. Not every phone app sets it, so also read the text.
         val type = ex.getInt("android.callType", 0)
-        val incoming = type == 1 || (type == 0 && text.contains("incoming", ignoreCase = true))
+        // Other call apps (WhatsApp, say) often set no call type: they are ringing if the text says so, or if one of
+        // their buttons is Answer / Accept.
+        val hasAnswer = (n.actions ?: emptyArray()).any { Regex("answer|accept", RegexOption.IGNORE_CASE).containsMatchIn(it.title ?: "") }
+        val incoming = type == 1 || (type != 2 && (hasAnswer || Regex("incoming|ringing|calling", RegexOption.IGNORE_CASE).containsMatchIn(text)))
         val chrono = ex.getBoolean(Notification.EXTRA_SHOW_CHRONOMETER)
         // Without a chronometer, the post time is all there is, but a repost (screen turning on, say) changes it.
         // So a call that is already being followed keeps the start time it had.
@@ -139,6 +142,9 @@ class MediaListenerService : NotificationListenerService() {
         IslandBus.callIncoming = incoming
         IslandBus.callStartMs = start
         IslandBus.callActions = actions
+        IslandBus.callMuteIntent = (n.actions ?: emptyArray())
+            .firstOrNull { it.actionIntent != null && Regex("mute", RegexOption.IGNORE_CASE).containsMatchIn(it.title ?: "") }
+            ?.actionIntent
         IslandBus.callOpen = n.contentIntent
 
         if (IslandBus.callDismissedKey == sbn.key) return // swiped away: stays hidden for this call

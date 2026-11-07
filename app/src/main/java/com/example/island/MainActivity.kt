@@ -82,6 +82,8 @@ private fun ControlScreen() {
     }
     val notifPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     val btPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    val callPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    val callGranted = context.checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS) == android.content.pm.PackageManager.PERMISSION_GRANTED
     val btGranted = Build.VERSION.SDK_INT < 31 ||
             context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == android.content.pm.PackageManager.PERMISSION_GRANTED
 
@@ -152,6 +154,10 @@ private fun ControlScreen() {
         } else {
             Text("Background running allowed.", style = MaterialTheme.typography.bodySmall)
         }
+        if (!callGranted) {
+            Text("To hang up or answer phone calls from the island, allow call control.")
+            Button(onClick = { callPermission.launch(Manifest.permission.ANSWER_PHONE_CALLS) }) { Text("Allow call control") }
+        }
         if (!btGranted) {
             Text("To show the name of a Bluetooth device when it connects, allow Bluetooth access.")
             Button(onClick = { btPermission.launch(Manifest.permission.BLUETOOTH_CONNECT) }) { Text("Allow Bluetooth names") }
@@ -167,6 +173,17 @@ private fun ControlScreen() {
                 },
             )
             Text("Camera and microphone dots")
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            androidx.compose.material3.Switch(
+                checked = IslandBus.lockPlayer,
+                onCheckedChange = { on ->
+                    IslandBus.lockPlayer = on
+                    context.getSharedPreferences("island", android.content.Context.MODE_PRIVATE)
+                        .edit().putBoolean("lock_player", on).apply()
+                },
+            )
+            Text("Music player on the lock screen")
         }
 
         Text("Try it", style = MaterialTheme.typography.titleMedium)

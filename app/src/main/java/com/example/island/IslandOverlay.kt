@@ -60,6 +60,10 @@ class IslandOverlay(private val context: Context, private val windowType: Int) {
     private var mainParams: WindowManager.LayoutParams? = null
     private var padView: View? = null
     private var padParams: WindowManager.LayoutParams? = null
+    private var lockView: View? = null
+    private var lockParams: WindowManager.LayoutParams? = null
+    private var restoreView: View? = null
+    private var restoreParams: WindowManager.LayoutParams? = null
 
     /** Builds the island and starts watching the battery. */
     fun start() {
@@ -121,18 +125,47 @@ class IslandOverlay(private val context: Context, private val windowType: Int) {
 
         val o = Owner().also { it.create() }
         val pad = root(o) { IslandTouchPad() }
+        val restore = root(o) { RestorePad() }
+        val lockPlayer = root(o) { LockPlayerRoot { on -> onLockPlayerTouchable(on) } }
+        // The lock screen player: across the screen, near the bottom (above the lock screen's own shortcuts).
+        val lockLp = WindowManager.LayoutParams(
+            (screenW - 56 * density).toInt(),
+            (176 * density).toInt(),
+            windowType,
+            BASE_FLAGS or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+            PixelFormat.TRANSLUCENT,
+        ).apply {
+            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            x = 0
+            y = (176 * density).toInt()
+            title = "Island lock player"
+        }
         val main = root(o) {
-            IslandRoot(hole = hole, xShift = 0.dp) { touchable, tall -> onLayoutWanted(touchable, tall) }
+            IslandRoot(
+                hole = hole,
+                xShift = 0.dp,
+                onRestoreWanted = { on -> onRestoreWanted(on) },
+            ) { touchable, tall -> onLayoutWanted(touchable, tall) }
         }
         val padLp = params(COMPACT_W.toFloat(), COMPACT_H, "Island pad")
         val mainLp = params(tallWidthDp, TALL_H, "Island")
+        // A small area right over the camera (72 x 44 dp), only touchable while there is something to bring back.
+        val restoreLp = params(72f, 44, "Island restore").apply {
+            y = (hole.centerY.value * density - 44 * density / 2f).toInt().coerceAtLeast(0)
+        }
         o.resume()
         // The pad goes in first, so the main window is above it.
         windowManager.addView(pad, padLp)
+        windowManager.addView(restore, restoreLp)
+        windowManager.addView(lockPlayer, lockLp)
         windowManager.addView(main, mainLp)
         owner = o
         padView = pad
         padParams = padLp
+        restoreView = restore
+        lockView = lockPlayer
+        lockParams = lockLp
+        restoreParams = restoreLp
         mainView = main
         mainParams = mainLp
     }
@@ -183,7 +216,29 @@ class IslandOverlay(private val context: Context, private val windowType: Int) {
         }
     }
 
+    private fun onLockPlayerTouchable(on: Boolean) {
+        lockView?.let { v ->
+            lockParams?.let { lp ->
+                lp.flags = if (on) BASE_FLAGS else BASE_FLAGS or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                runCatching { windowManager.updateViewLayout(v, lp) }
+            }
+        }
+    }
+
+    private fun onRestoreWanted(on: Boolean) {
+        restoreView?.let { v ->
+            restoreParams?.let { lp ->
+                lp.flags = if (on) BASE_FLAGS else BASE_FLAGS or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                runCatching { windowManager.updateViewLayout(v, lp) }
+            }
+        }
+    }
+
     private fun hideIsland() {
+        lockView?.let { runCatching { windowManager.removeView(it) } }
+        lockView = null
+        restoreView?.let { runCatching { windowManager.removeView(it) } }
+        restoreView = null
         mainView?.let { runCatching { windowManager.removeView(it) } }
         padView?.let { runCatching { windowManager.removeView(it) } }
         mainView = null

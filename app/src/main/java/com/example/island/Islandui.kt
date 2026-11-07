@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredSize
@@ -45,6 +46,11 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.NonCancellable
@@ -275,6 +281,28 @@ object IslandBus {
     var alertReturn = IslandState.Idle
 
     /** The camera / microphone is in use by some app (shows the green / orange dots). */
+    /** The user's switch (in the app): open the music player by itself on the lock screen. On by default. */
+    var lockPlayer by mutableStateOf(true)
+
+    /** Something was swiped away or timed out, and can be brought back. */
+    val hasHidden: Boolean
+        get() = (callReal && callDismissedKey == callKey) ||
+                (timerKey.isNotEmpty() && timerDismissedKey == timerKey) ||
+                (navKey.isNotEmpty() && navDismissedKey == navKey) ||
+                (mediaPackage.isNotEmpty() && mediaTitle.isNotEmpty() && (mediaHiddenTitle == mediaTitle || !mediaLive))
+
+    /** Brings back everything that was swiped away (and paused music that had timed out). */
+    fun restoreDismissed() {
+        callDismissedKey = null
+        timerDismissedKey = null
+        navDismissedKey = null
+        mediaHiddenTitle = ""
+        if (mediaPackage.isNotEmpty() && mediaTitle.isNotEmpty()) mediaLive = true
+        autoIdle = false
+        val r = restingState()
+        if (!state.isTall()) state = r
+    }
+
     /** The user's switch (in the app) for the dots. Off by default. */
     var privacyEnabled by mutableStateOf(false)
     var camActive by mutableStateOf(false)
@@ -387,6 +415,27 @@ object IslandBus {
     var timerPackage = ""
 
     private fun dialerish(p: String) = listOf("incallui", "dialer", "telecom").any { p.contains(it) }
+    fun isPhoneApp(p: String) = dialerish(p)
+
+    /** The notification's own Mute button, for call apps that have one (WhatsApp, say). */
+    var callMuteIntent: android.app.PendingIntent? = null
+
+    /**
+     * Answer / hang up. For the phone app the system call is used directly (needs the "answer calls" permission), because
+     * the phone app's own button only opens the call screen. Otherwise (or without the permission) the button's own
+     * intent is sent.
+     */
+    fun pressCallAction(a: CallAction) {
+        val ctx = appContext
+        if (ctx != null && isPhoneApp(callPackage)) {
+            val tm = ctx.getSystemService(android.telecom.TelecomManager::class.java)
+            val done = runCatching {
+                if (a.accept) { tm.acceptRingingCall(); true } else tm.endCall()
+            }.getOrDefault(false)
+            if (done) return
+        }
+        a.intent?.let { sendPI(it) }
+    }
 
     /** True while you are inside the app a pill belongs to (the music app, Maps, Clock, the phone app): it stays out of the way. */
     fun hiddenByApp(kind: IslandState): Boolean {
@@ -579,10 +628,11 @@ private fun IslandState.dims(hole: Hole): DpSize = when (this) {
     IslandState.ChargingOpen -> DpSize(350.dp, 84.dp)
     IslandState.TimerOpen -> DpSize(340.dp, 104.dp)
     IslandState.Call -> DpSize(190.dp, COMPACT)
-    IslandState.Alert -> DpSize(190.dp, COMPACT)
+    // As wide as the message needs, with the camera's gap kept clear in the middle (the text lives on the right half).
+    IslandState.Alert -> DpSize((IslandBus.camGap + (IslandBus.alertText.length * 8 + 36).dp * 2).coerceIn(190.dp, 340.dp), COMPACT)
     IslandState.Nav -> DpSize(190.dp, COMPACT)
     IslandState.NavOpen -> DpSize(350.dp, 150.dp)
-    IslandState.CallOpen -> DpSize(350.dp, 156.dp)
+    IslandState.CallOpen -> DpSize(360.dp, 165.dp)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -594,7 +644,12 @@ private fun IslandState.dims(hole: Hole): DpSize = when (this) {
  * screen, so the island is shifted by that much.
  */
 @Composable
-fun IslandRoot(hole: Hole, xShift: Dp, onLayoutWanted: (touchable: Boolean, tall: Boolean) -> Unit) {
+fun IslandRoot(
+    hole: Hole,
+    xShift: Dp,
+    onRestoreWanted: (Boolean) -> Unit = {},
+    onLayoutWanted: (touchable: Boolean, tall: Boolean) -> Unit,
+) {
     val view = LocalView.current
     // While you are inside the app the music comes from (Spotify, say), the player stays out of the way. It is only
     // hidden from view: it comes back by itself when you leave that app.
@@ -627,6 +682,10 @@ fun IslandRoot(hole: Hole, xShift: Dp, onLayoutWanted: (touchable: Boolean, tall
     // Look again right away whenever anything that decides the layout changes (not just on the 0.4 s timer).
     LaunchedEffect(state, IslandBus.mediaPlaying, IslandBus.mediaLive, IslandBus.mediaTitle, IslandBus.timerKnown, IslandBus.callStartMs) {
         split = IslandBus.splitPair(state)
+    }
+    // A small touch area over the camera, only while something is hidden: touch it to get the island back.
+    LaunchedEffect(state, IslandBus.hasHidden) {
+        onRestoreWanted(state == IslandState.Idle && IslandBus.hasHidden)
     }
     LaunchedEffect(Unit) {
         var navWasHidden = false
@@ -755,6 +814,71 @@ internal fun Modifier.islandGestures(): Modifier = this.pointerInput(Unit) {
 }
 
 /** An invisible touch area. While the island is compact it lives in its own small window (see IslandOverlay). */
+/**
+ * The lock screen music player, like the iPhone's: a card near the bottom of the lock screen with the cover, the song,
+ * the progress bar and the play / skip buttons. Only there while the phone is locked and some music is open.
+ */
+@Composable
+fun LockPlayerRoot(onTouchable: (Boolean) -> Unit) {
+    val view = LocalView.current
+    val keyguard = remember { view.context.getSystemService(android.app.KeyguardManager::class.java) }
+    var locked by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            locked = runCatching { keyguard.isKeyguardLocked }.getOrDefault(false)
+            delay(60)
+        }
+    }
+    // Only appears if music is playing while the phone is locked. After 30 s without playing, it goes away.
+    var eligible by remember { mutableStateOf(false) }
+    LaunchedEffect(locked, IslandBus.mediaPlaying) {
+        if (!locked) {
+            eligible = false
+        } else if (IslandBus.mediaPlaying) {
+            eligible = true
+        } else if (eligible) {
+            delay(30_000)
+            eligible = false
+        }
+    }
+    val want = locked && eligible && IslandBus.lockPlayer && IslandBus.mediaPackage.isNotEmpty() && IslandBus.mediaTitle.isNotEmpty()
+    // Slides in gently, but leaves almost at once when you unlock.
+    val shown by animateFloatAsState(if (want) 1f else 0f, tween(if (want) 300 else 90), label = "lock player")
+    LaunchedEffect(want) { onTouchable(want) }
+    val glass = RoundedCornerShape(28.dp)
+    if (shown > 0.01f) {
+        Box(
+            Modifier.fillMaxSize()
+                .graphicsLayer {
+                    alpha = shown
+                    translationY = (1f - shown) * 40.dp.toPx()
+                }
+                // Like the home screen's widgets: smoky grey glass, a touch lighter at the top, with a thin pale rim.
+                .clip(glass)
+                .background(Brush.verticalGradient(listOf(Color(0xA3585D64), Color(0xA3343840))))
+                .border(
+                    1.6.dp,
+                    Brush.verticalGradient(listOf(Color(0xCCD6DADF), Color(0x80B8BDC3))),
+                    glass,
+                ),
+        ) { LockMusicCard() }
+    }
+}
+
+/** Touch area over the camera while something is hidden: tap, hold or swipe down brings the island back. */
+@Composable
+fun RestorePad() {
+    Box(
+        Modifier.fillMaxSize()
+            .pointerInput(Unit) {
+                detectTapGestures(onTap = { IslandBus.restoreDismissed() }, onLongPress = { IslandBus.restoreDismissed() })
+            }
+            .pointerInput(Unit) {
+                detectVerticalDragGestures { _, drag -> if (drag > 4f) IslandBus.restoreDismissed() }
+            },
+    )
+}
+
 @Composable
 fun IslandTouchPad() {
     Box(Modifier.fillMaxSize().islandGestures())
@@ -872,7 +996,8 @@ fun Island(
         val oldRight = right.value
         prev.splitOn = splitOn
         prev.secondary = if (splitOn) splitNow else null
-        prev.main = splitLeftNow ?: state
+        // A short alert is never something the camera pill or the small pill falls back to.
+        prev.main = (splitLeftNow ?: state).takeIf { it != IslandState.Alert } ?: prev.main
         if (splitOn) bubbleKind = splitNow
         // Shrinking back into the small pill runs on its own coroutine, so nothing else can cut it short halfway.
         if (bubblePhase) return@LaunchedEffect
@@ -1021,7 +1146,7 @@ fun Island(
         contentAlignment = Alignment.TopCenter,
     ) {
         // The camera pill, left behind while the small pill opens.
-        val ghostShown = if (fromBubbleNow) prev.main else if (toBubbleNow) splitLeft else ghostKind
+        val ghostShown = (if (fromBubbleNow) prev.main else if (toBubbleNow) splitLeft else ghostKind)?.takeIf { it != IslandState.Alert }
         if (ghostShown != null) {
             Box(
                 Modifier.padding(top = TOUCH_PAD).offset(x = ((-leftExt + mainRight) / 2).value.dp)
@@ -1094,16 +1219,24 @@ fun Island(
         }
         // The camera / microphone pill: grows out of the hole to the right, green dot on top (camera), orange below (mic).
         if (privOn) {
-            val pl = -(camD.value / 2 + 4f)
-            val pr = camD.value / 2 + 4f + privExtra * privAnim
-            val dy = compactTop.value - top.value
+            // It grows from, and shrinks back into, the idle circle over the camera: width, height and position all
+            // follow the same 0..1 progress, so closing is one smooth motion with no cut at the end.
+            val f = privAnim.coerceAtLeast(0f)
+            val idleD = IslandState.Idle.dims(hole).width.value
+            val wide = camD.value / 2 + 4f
+            val pl = -(idleD / 2 + (wide - idleD / 2) * f)
+            val pr = idleD / 2 + (wide - idleD / 2) * f + privExtra * f
+            val pillH = idleD + (COMPACT.value - idleD) * f
+            val centre = hole.centerY.value + HOLE_NUDGE.value * (1f - f)
+            val dy = (centre - pillH / 2) - top.value
             if (!state.isTall()) {
                 Box(
                     Modifier.padding(top = TOUCH_PAD).offset(x = ((pl + pr) / 2).dp, y = dy.dp)
-                        .size((pr - pl).dp, COMPACT)
-                        .clip(RoundedCornerShape(COMPACT / 2)).background(Color.Black),
+                        // requiredSize: exactly this size, whatever space the layout around it offers.
+                        .requiredSize((pr - pl).dp, pillH.dp)
+                        .clip(RoundedCornerShape((pillH / 2).dp)).background(Color.Black),
                 ) {
-                    PrivacyDots(privCam, privMic, Modifier.align(Alignment.CenterEnd).padding(end = 7.dp))
+                    PrivacyDots(privCam, privMic, Modifier.align(Alignment.CenterEnd).padding(end = 7.dp).graphicsLayer { alpha = f })
                 }
             } else {
                 // Open island: just the dots, in its top right corner.
@@ -1115,7 +1248,7 @@ fun Island(
         }
         // The small second pill.
         // While split, always show what is current; the remembered one is only for the fade-out.
-        val bubbleShown = if (splitOn) split else bubbleKind
+        val bubbleShown = (if (splitOn) split else bubbleKind)?.takeIf { it != IslandState.Alert }
         if ((bubbleAlpha.value > 0.01f || demoteNow) && bubbleShown != null) {
             val bl = if (demoteNow) left.value else bubbleLeft.value
             val br = if (demoteNow) right.value else bubbleRight.value
@@ -1139,12 +1272,43 @@ fun Island(
 // Contents
 // ---------------------------------------------------------------------------------------------
 
-/** The privacy dots: green for the camera (top), orange for the microphone (below). One alone sits in the middle. */
+/**
+ * The privacy dots: green for the camera (top), orange for the microphone (below). One alone sits in the middle.
+ * When the second one switches on it splits off from the first; when one of two switches off, they merge.
+ */
 @Composable
 private fun PrivacyDots(cam: Boolean, mic: Boolean, modifier: Modifier) {
-    Column(modifier, verticalArrangement = Arrangement.spacedBy(3.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        if (cam) Box(Modifier.size(7.dp).clip(CircleShape).background(Color(0xFF30D158)))
-        if (mic) Box(Modifier.size(7.dp).clip(CircleShape).background(Color(0xFFFF9F0A)))
+    val yCam = remember { Animatable(0f) }
+    val yMic = remember { Animatable(0f) }
+    val aCam = remember { Animatable(0f) }
+    val aMic = remember { Animatable(0f) }
+    var prevCam by remember { mutableStateOf(false) }
+    var prevMic by remember { mutableStateOf(false) }
+    LaunchedEffect(cam, mic) {
+        val spec = spring<Float>(dampingRatio = 0.8f, stiffness = 500f)
+        // A dot that switches on starts where the other one is, then they move apart.
+        if (cam && !prevCam) yCam.snapTo(if (prevMic) yMic.value else 0f)
+        if (mic && !prevMic) yMic.snapTo(if (prevCam) yCam.value else 0f)
+        prevCam = cam
+        prevMic = mic
+        val both = cam && mic
+        coroutineScope {
+            launch { aCam.animateTo(if (cam) 1f else 0f, tween(200)) }
+            launch { aMic.animateTo(if (mic) 1f else 0f, tween(200)) }
+            // A dot that switches off slides to the middle (where the remaining one is going) while it fades.
+            launch { yCam.animateTo(if (both) -5f else 0f, spec) }
+            launch { yMic.animateTo(if (both) 5f else 0f, spec) }
+        }
+    }
+    Box(modifier.size(7.dp, 24.dp), contentAlignment = Alignment.Center) {
+        Box(
+            Modifier.offset(y = yCam.value.dp).graphicsLayer { alpha = aCam.value }
+                .size(7.dp).clip(CircleShape).background(Color(0xFF30D158)),
+        )
+        Box(
+            Modifier.offset(y = yMic.value.dp).graphicsLayer { alpha = aMic.value }
+                .size(7.dp).clip(CircleShape).background(Color(0xFFFF9F0A)),
+        )
     }
 }
 

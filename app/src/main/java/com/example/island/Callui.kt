@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -88,26 +89,28 @@ internal fun CallCompact() {
 /** Expanded: who is calling, the time, and the buttons the phone app offers (Answer, Decline, Hang up...). */
 @Composable
 internal fun CallOpenContent() {
-    Column(Modifier.fillMaxSize().padding(start = 22.dp, end = 22.dp, top = 0.dp, bottom = 14.dp)) {
+    Column(Modifier.fillMaxSize().padding(start = 28.dp, end = 28.dp, top = 0.dp, bottom = 14.dp)) {
         // The top row is as tall as the compact island, so the camera sits in its middle: who is calling on the left,
         // the time and a waveform on the right.
-        Row(Modifier.fillMaxWidth().height(COMPACT), verticalAlignment = Alignment.CenterVertically) {
+        // A little taller than the camera row, so the text sits between the top edge and the name.
+        Row(Modifier.fillMaxWidth().height(COMPACT + 12.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(
                 "Phone",
-                color = CallGray, fontSize = 13.sp, maxLines = 1, modifier = Modifier.weight(1f),
+                color = CallGray, fontSize = 16.sp, fontWeight = FontWeight.Medium, maxLines = 1, modifier = Modifier.weight(1f),
             )
             Spacer(Modifier.width(IslandBus.camGap))
             Row(Modifier.weight(1f), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     if (IslandBus.callIncoming) "Incoming" else callText(),
-                    color = CallGray, fontSize = 14.sp, maxLines = 1,
+                    color = CallGray, fontSize = 17.sp, fontWeight = FontWeight.Medium, maxLines = 1,
                 )
-                Spacer(Modifier.width(8.dp))
+                Spacer(Modifier.width(10.dp))
                 Equalizer(true, CallGreen)
             }
         }
         // The name gets the whole width under the camera, at a comfortable size.
-        Row(Modifier.fillMaxWidth().weight(1f), verticalAlignment = Alignment.CenterVertically) {
+        // Shifted so the space from the "Phone" line to the photo equals the space from the photo to the buttons.
+        Row(Modifier.fillMaxWidth().weight(1f).offset(y = -(COMPACT / 4 - 2.dp)), verticalAlignment = Alignment.CenterVertically) {
             Box(
                 Modifier.size(42.dp).clip(CircleShape).background(Color(0xFF636366)),
                 contentAlignment = Alignment.Center,
@@ -128,8 +131,10 @@ internal fun CallOpenContent() {
         val audio = remember { context.getSystemService(AudioManager::class.java) }
         var muted by remember { mutableStateOf(runCatching { audio.isMicrophoneMute }.getOrDefault(false)) }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            // Mute only makes sense once the call is connected.
-            if (!IslandBus.callIncoming) {
+            // Mute only makes sense once the call is connected, and only where it can work: the phone app (the system
+            // microphone switch) or an app that has its own Mute button in its notification.
+            val canMute = IslandBus.callMuteIntent != null || IslandBus.isPhoneApp(IslandBus.callPackage) || !IslandBus.callReal
+            if (!IslandBus.callIncoming && canMute) {
                 Box(
                     Modifier.weight(1f).height(44.dp).clip(CircleShape)
                         .background(if (muted) Color.White else Color(0xFF3A3A3C))
@@ -137,8 +142,14 @@ internal fun CallOpenContent() {
                             interactionSource = remember { MutableInteractionSource() },
                             indication = null,
                         ) {
-                            runCatching { audio.isMicrophoneMute = !muted }
-                            muted = runCatching { audio.isMicrophoneMute }.getOrDefault(!muted)
+                            val own = IslandBus.callMuteIntent
+                            if (own != null) {
+                                IslandBus.sendPI(own)
+                                muted = !muted
+                            } else {
+                                runCatching { audio.isMicrophoneMute = !muted }
+                                muted = runCatching { audio.isMicrophoneMute }.getOrDefault(!muted)
+                            }
                         },
                     contentAlignment = Alignment.Center,
                 ) {
@@ -157,8 +168,7 @@ internal fun CallOpenContent() {
                             interactionSource = remember { MutableInteractionSource() },
                             indication = null,
                         ) {
-                            val intent = action.intent
-                            if (intent != null) IslandBus.sendPI(intent) else IslandBus.demoPress(action)
+                            if (action.intent != null) IslandBus.pressCallAction(action) else IslandBus.demoPress(action)
                         },
                     contentAlignment = Alignment.Center,
                 ) {
