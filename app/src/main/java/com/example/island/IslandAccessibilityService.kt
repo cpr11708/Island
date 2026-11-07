@@ -22,7 +22,7 @@ class IslandAccessibilityService : AccessibilityService() {
      * it, and close it again. Done once per timer, and never on the lock screen or with the screen off.
      */
     private fun maybePeek() {
-        if (!IslandBus.timerReal || IslandBus.timerKnown || peekedKey == IslandBus.timerKey) return
+        if (!IslandBus.timerReal || IslandBus.timerStopwatch || IslandBus.timerKnown || peekedKey == IslandBus.timerKey) return
         val pm = getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
         val km = getSystemService(android.content.Context.KEYGUARD_SERVICE) as android.app.KeyguardManager
         if (!pm.isInteractive || km.isKeyguardLocked) return
@@ -44,8 +44,17 @@ class IslandAccessibilityService : AccessibilityService() {
                 IslandBus.timerCmdDebug = if (done) "$cmd done" else "$cmd: button not found in Clock"
                 IslandBus.timerCmd = null
                 cmdStart = 0L
-                if (done) handler.postDelayed({ performGlobalAction(GLOBAL_ACTION_BACK) }, 400)
-            } else handler.postDelayed(this, 300)
+                if (done) handler.postDelayed({ performGlobalAction(GLOBAL_ACTION_BACK) }, 150)
+            } else handler.postDelayed(this, 120)
+        }
+    }
+
+    // A button pressed in the island starts the Clock automation within a tenth of a second, not at the next slow poll,
+    // so the Clock is on screen for as short a time as possible.
+    private val cmdWatch = object : Runnable {
+        override fun run() {
+            if (IslandBus.timerCmd != null && cmdStart == 0L) handler.post(cmdLoop)
+            handler.postDelayed(this, 100)
         }
     }
     private var sameCount = 0
@@ -67,6 +76,8 @@ class IslandAccessibilityService : AccessibilityService() {
         overlay = IslandOverlay(this, WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY).also { it.start() }
         handler.removeCallbacks(poll)
         handler.post(poll)
+        handler.removeCallbacks(cmdWatch)
+        handler.post(cmdWatch)
     }
 
     // Only used to learn which app is in front, so the music player can stay hidden while you are in the music app.
@@ -92,6 +103,7 @@ class IslandAccessibilityService : AccessibilityService() {
 
     override fun onUnbind(intent: Intent?): Boolean {
         handler.removeCallbacks(poll)
+        handler.removeCallbacks(cmdWatch)
         overlay?.stop()
         overlay = null
         return super.onUnbind(intent)
@@ -99,6 +111,7 @@ class IslandAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         handler.removeCallbacks(poll)
+        handler.removeCallbacks(cmdWatch)
         overlay?.stop()
         overlay = null
         super.onDestroy()
@@ -110,7 +123,7 @@ class IslandAccessibilityService : AccessibilityService() {
      * countdown from it. (The status bar chip is not used.) After that the island counts down by itself.
      */
     private fun readTimerChip(): Boolean {
-        if (!IslandBus.timerReal) return false
+        if (!IslandBus.timerReal || IslandBus.timerStopwatch) return false
         val list = try { windows } catch (_: Exception) { return false }
         for (w in list) {
             val root = w.root ?: continue
@@ -170,8 +183,10 @@ class IslandAccessibilityService : AccessibilityService() {
 
     /** Looks for the right button in the Clock app's window and presses it. Returns true once pressed. */
     private fun tryTimerCommand(cmd: String): Boolean {
-        val want = if (cmd == "pause") Regex("pause|resume|start|play|continue", RegexOption.IGNORE_CASE)
-        else Regex("cancel|delete|stop|reset|close|dismiss", RegexOption.IGNORE_CASE)
+        // The stopwatch's "pause" is its Stop / Start button, and its "cancel" is Reset.
+        val sw = IslandBus.timerStopwatch
+        val want = if (cmd == "pause") Regex(if (sw) "stop|start|pause|resume|continue" else "pause|resume|start|play|continue", RegexOption.IGNORE_CASE)
+        else Regex(if (sw) "reset|cancel|delete" else "cancel|delete|stop|reset|close|dismiss", RegexOption.IGNORE_CASE)
         val seen = StringBuilder()
         for (w in windows) {
             val root = w.root ?: continue
@@ -183,7 +198,8 @@ class IslandAccessibilityService : AccessibilityService() {
                 if (n != null && n.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK)) {
                     if (cmd == "pause") {
                         if (IslandBus.timerPaused) {
-                            IslandBus.timerEndMs = System.currentTimeMillis() + IslandBus.timerPausedMs
+                            val resumed = System.currentTimeMillis()
+                            IslandBus.timerEndMs = if (sw) resumed - IslandBus.timerPausedMs else resumed + IslandBus.timerPausedMs
                             IslandBus.timerPaused = false
                         } else {
                             IslandBus.timerPausedMs = IslandBus.timerRemainingMs()

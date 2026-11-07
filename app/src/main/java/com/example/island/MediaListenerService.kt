@@ -31,6 +31,7 @@ class MediaListenerService : NotificationListenerService() {
         checkCalls()
         checkTimers()
         checkNav()
+        checkStatus()
     }
 
     override fun onListenerDisconnected() {
@@ -43,12 +44,38 @@ class MediaListenerService : NotificationListenerService() {
         checkCalls()
         checkTimers()
         checkNav()
+        checkStatus()
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
         checkCalls()
         checkTimers()
         checkNav()
+        checkStatus()
+    }
+
+    /** Screen recording and hotspot are shown by the phone as ongoing notifications: their presence is the signal. */
+    private fun checkStatus() {
+        val all = try { activeNotifications } catch (_: SecurityException) { null } ?: return
+        var rec = false
+        var hot = false
+        for (sbn in all) {
+            val n = sbn.notification
+            val ex = n.extras
+            val pkg = sbn.packageName
+            val ch = (n.channelId ?: "").lowercase()
+            val words = ((ex.getCharSequence(Notification.EXTRA_TITLE) ?: "").toString() + " " +
+                    (ex.getCharSequence(Notification.EXTRA_TEXT) ?: "")).lowercase()
+            if ((pkg.contains("smartcapture") && ("record" in words || "record" in ch)) ||
+                (pkg == "com.android.systemui" && ("screenrecord" in ch || "screen_record" in ch)) ||
+                "screen record" in words
+            ) rec = true
+            if ((pkg == "android" || pkg == "com.android.systemui" || pkg.contains("settings") || pkg.contains("wifi") || pkg.contains("tether")) &&
+                ("hotspot" in words || "tethering" in words || "tether" in ch || "hotspot" in ch)
+            ) hot = true
+        }
+        IslandBus.recActive = rec
+        IslandBus.hotspotNote = hot
     }
 
     private fun looksLikeCall(sbn: StatusBarNotification): Boolean {
@@ -171,13 +198,19 @@ class MediaListenerService : NotificationListenerService() {
         val ex = sbn.notification.extras
         val words = ((ex.getCharSequence(Notification.EXTRA_TITLE) ?: "").toString() + " " +
                 (ex.getCharSequence(Notification.EXTRA_TEXT) ?: "")).lowercase()
-        if ("stopwatch" in words) return false
-        return "timer" in words || ex.getBoolean("android.chronometerCountDown")
+        return "stopwatch" in words || "timer" in words || ex.getBoolean("android.chronometerCountDown")
+    }
+
+    private fun isStopwatch(sbn: StatusBarNotification): Boolean {
+        val ex = sbn.notification.extras
+        return "stopwatch" in ((ex.getCharSequence(Notification.EXTRA_TITLE) ?: "").toString() + " " +
+                (ex.getCharSequence(Notification.EXTRA_TEXT) ?: "")).lowercase()
     }
 
     private fun checkTimers() {
         val all = try { activeNotifications } catch (_: SecurityException) { null } ?: return
-        val sbn = all.firstOrNull { looksLikeTimer(it) }
+        // A real timer wins over a stopwatch when both are running.
+        val sbn = all.filter { looksLikeTimer(it) }.minByOrNull { if (isStopwatch(it)) 1 else 0 }
         if (sbn == null) {
             timerEnded()
             return
@@ -255,8 +288,41 @@ class MediaListenerService : NotificationListenerService() {
                 val exact = n.`when` + lengthMs
                 if (lengthMs > 0 && Math.abs(exact - (goesOff + 30_000)) <= 60_000) exact else goesOff + 30_000
             }
+        val isSw = isStopwatch(sbn)
+        IslandBus.timerStopwatch = isSw
         IslandBus.timerFromNotification = ongoingMs != null || endFromText != null
-        when {
+        if (isSw) {
+            // A stopwatch counts up: the island remembers the moment it started.
+            val paused = ongoingActions.any { it.label.contains("resume", true) || it.label.contains("start", true) } ||
+                    (n.actions?.any { a -> a.title?.toString()?.let { t -> t.contains("resume", true) || t.contains("start", true) } == true } == true)
+            val elapsed: Long? = when {
+                chrono && !countDownFlag && n.`when` in 1..now -> now - n.`when`
+                ongoingMs != null -> ongoingMs
+                timeInText != null -> {
+                    val a = timeInText.groupValues[1].toLong()
+                    val b = timeInText.groupValues[2].toLong()
+                    val c = timeInText.groupValues[3].takeIf { it.isNotEmpty() }?.toLong()
+                    (if (c != null) a * 3600 + b * 60 + c else a * 60 + b) * 1000
+                }
+                else -> null
+            }
+            if (elapsed != null) {
+                if (paused) {
+                    IslandBus.timerPausedMs = elapsed
+                    IslandBus.timerPaused = true
+                } else {
+                    val start = now - elapsed
+                    if (!IslandBus.timerKnown || IslandBus.timerPaused || Math.abs(start - IslandBus.timerEndMs) > 2500) IslandBus.timerEndMs = start
+                    IslandBus.timerPaused = false
+                }
+                IslandBus.timerKnown = true
+            } else if (!IslandBus.timerKnown) {
+                // The notification doesn't say how long it has run: count from when it was posted.
+                IslandBus.timerEndMs = if (n.`when` in 1..now) n.`when` else now
+                IslandBus.timerPaused = false
+                IslandBus.timerKnown = true
+            }
+        } else when {
             ongoingMs != null -> {
                 val paused = ongoingActions.any { it.label.contains("resume", true) || it.label.contains("start", true) }
                 if (paused) {
@@ -314,7 +380,7 @@ class MediaListenerService : NotificationListenerService() {
         IslandBus.timerReal = true
         IslandBus.timerKey = sbn.key
         IslandBus.timerPackage = sbn.packageName
-        IslandBus.timerLabel = title.ifEmpty { "Timer" }
+        IslandBus.timerLabel = if (isSw) "Stopwatch" else title.ifEmpty { "Timer" }
 
         if (IslandBus.timerDismissedKey == sbn.key) return // swiped away: stays hidden for this timer
         if (IslandBus.hiddenByApp(IslandState.Timer)) return // inside the Clock: nothing changes
@@ -486,6 +552,7 @@ class MediaListenerService : NotificationListenerService() {
     private fun timerEnded() {
         if (!IslandBus.timerReal) return // the demo button's timer is not ours to clear
         IslandBus.timerReal = false
+        IslandBus.timerStopwatch = false
         IslandBus.timerKnown = false
         IslandBus.timerKey = ""
         IslandBus.timerDismissedKey = null

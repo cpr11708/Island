@@ -1,11 +1,16 @@
 package com.example.island
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
@@ -79,7 +84,7 @@ internal fun MiniActivity(kind: IslandState) {
                 }
                 Spacer(Modifier.width(4.dp))
                 Text(
-                    if (IslandBus.timerKnown) miniClock(IslandBus.timerRemainingMs(now) + 999) else "Timer",
+                    if (IslandBus.timerKnown) miniClock(IslandBus.timerRemainingMs(now) + (if (IslandBus.timerStopwatch) 0L else 999L)) else "Timer",
                     color = MiniOrange, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
                 )
             }
@@ -99,15 +104,34 @@ internal fun MiniActivity(kind: IslandState) {
 /** A short message: an icon on the left, a few words on the right (silent mode, a Bluetooth device...). */
 @Composable
 internal fun AlertCompact() {
-    Row(
-        Modifier.fillMaxSize().padding(horizontal = 14.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(IslandBus.alertIcon, fontSize = 15.sp, color = IslandBus.alertColor)
-        Text(
-            IslandBus.alertText,
-            color = IslandBus.alertColor, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
-        )
+    // Laid out at the pill's final width even while it is still growing, so the words never slide under the hole
+    // on the way (the pill grows from a narrow size, and a narrow layout squeezes the middle).
+    val w = (IslandBus.camGap + (IslandBus.alertText.length * 8 + 36).dp * 2).coerceIn(190.dp, 340.dp)
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        // The icon is left of the camera, the words right of it: nothing is ever drawn under the hole.
+        Row(Modifier.requiredWidth(w).fillMaxHeight().padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                if (IslandBus.alertBattery >= 0) {
+                    // A battery that fills up to its level, with the number beside it.
+                    val fill = remember(IslandBus.alertKey) { Animatable(0f) }
+                    LaunchedEffect(IslandBus.alertKey) { fill.animateTo(IslandBus.alertBattery.toFloat(), tween(900)) }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        BatteryIcon(fill.value.toInt(), Modifier.size(22.dp, 11.dp), IslandBus.alertColor)
+                        Spacer(Modifier.width(5.dp))
+                        Text("${IslandBus.alertBattery}%", color = IslandBus.alertColor, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                    }
+                } else {
+                    Text(IslandBus.alertIcon, fontSize = 15.sp, color = IslandBus.alertColor)
+                }
+            }
+            Spacer(Modifier.width(IslandBus.camGap))
+            Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
+                Text(
+                    IslandBus.alertText,
+                    color = IslandBus.alertColor, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
+                    maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                )
+            }
+        }
     }
 }

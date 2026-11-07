@@ -1,21 +1,34 @@
 package com.example.island
 
 import android.Manifest
+import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import android.os.Bundle
+import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
@@ -23,6 +36,9 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -32,8 +48,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 
@@ -41,23 +61,31 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme {
-                Surface(Modifier.fillMaxSize()) { ControlScreen() }
+            MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
+                Surface(Modifier.fillMaxSize()) { SetupScreen() }
             }
         }
     }
 }
 
+private val Good = Color(0xFF30D158)
+private val Warn = Color(0xFFFF9F0A)
+
 @Composable
-private fun ControlScreen() {
+private fun SetupScreen() {
     val context = LocalContext.current
     var canOverlay by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
     var listenerOn by remember { mutableStateOf(isListenerOn(context)) }
     var a11yOn by remember { mutableStateOf(isAccessibilityOn(context)) }
     val powerManager = context.getSystemService(android.os.PowerManager::class.java)
     var batteryFree by remember { mutableStateOf(powerManager.isIgnoringBatteryOptimizations(context.packageName)) }
+    var callGranted by remember { mutableStateOf(has(context, Manifest.permission.ANSWER_PHONE_CALLS)) }
+    var btGranted by remember {
+        mutableStateOf(Build.VERSION.SDK_INT < 31 || has(context, Manifest.permission.BLUETOOTH_CONNECT))
+    }
+    var devTools by remember { mutableStateOf(false) }
 
-    // Re-check the permission when coming back from the settings screen.
+    // Check everything again when coming back from a settings screen.
     val lifecycle = (context as ComponentActivity).lifecycle
     DisposableEffect(lifecycle) {
         val observer = LifecycleEventObserver { _, event ->
@@ -66,172 +94,297 @@ private fun ControlScreen() {
                 listenerOn = isListenerOn(context)
                 a11yOn = isAccessibilityOn(context)
                 batteryFree = powerManager.isIgnoringBatteryOptimizations(context.packageName)
+                callGranted = has(context, Manifest.permission.ANSWER_PHONE_CALLS)
+                btGranted = Build.VERSION.SDK_INT < 31 || has(context, Manifest.permission.BLUETOOTH_CONNECT)
             }
         }
         lifecycle.addObserver(observer)
         onDispose { lifecycle.removeObserver(observer) }
     }
-
     LaunchedEffect(listenerOn) {
         // After a reinstall Android sometimes forgets to reconnect the listener, so ask it to.
         if (listenerOn) runCatching {
             android.service.notification.NotificationListenerService.requestRebind(
-                android.content.ComponentName(context, MediaListenerService::class.java),
+                ComponentName(context, MediaListenerService::class.java),
             )
         }
     }
     val notifPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
-    val btPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
-    val callPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
-    val callGranted = context.checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS) == android.content.pm.PackageManager.PERMISSION_GRANTED
-    val btGranted = Build.VERSION.SDK_INT < 31 ||
-            context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    val btPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        btGranted = Build.VERSION.SDK_INT < 31 || has(context, Manifest.permission.BLUETOOTH_CONNECT)
+    }
+    val callPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        callGranted = has(context, Manifest.permission.ANSWER_PHONE_CALLS)
+    }
+
+    val islandReady = a11yOn || canOverlay
+    val allGood = islandReady && listenerOn && batteryFree
 
     Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 28.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Text("Island", style = MaterialTheme.typography.headlineMedium)
-
-        if (a11yOn) {
-            Text("Island is running (accessibility service). It starts by itself, so there is nothing to start here.")
-        } else {
-            Text("Recommended: turn on Island in Accessibility settings, under Installed apps. That lets you touch the island in every app, not just on the home screen. (If the switch is greyed out, open Island's App info, tap the three dots, and choose \"Allow restricted settings\" first.)")
-            Button(onClick = {
-                context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-            }) { Text("Open accessibility settings") }
-            Text("Or use the basic overlay below (touches near the top of some apps will not reach it):", style = MaterialTheme.typography.bodySmall)
+        // ---- Header
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Island", fontSize = 34.sp, fontWeight = FontWeight.Bold)
+            Text(
+                "A Dynamic Island for your cover screen.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 15.sp,
+            )
         }
 
-        if (a11yOn) {
-            // Nothing else to set up for the island itself.
-        } else if (!canOverlay) {
-            Text("Step 1: allow Island to display over other apps.")
-            Button(onClick = {
-                context.startActivity(
-                    Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${context.packageName}")),
-                )
-            }) { Text("Grant overlay permission") }
-        } else {
-            Text("Overlay permission granted.")
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Button(onClick = {
-                    if (Build.VERSION.SDK_INT >= 33) notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-                    context.startForegroundService(Intent(context, IslandService::class.java))
-                }) { Text("Start island") }
-                OutlinedButton(onClick = {
-                    context.stopService(Intent(context, IslandService::class.java))
-                }) { Text("Stop") }
+        // ---- Status
+        Card(color = (if (allGood) Good else Warn).copy(alpha = 0.16f)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Dot(if (allGood) Good else Warn)
+                Column {
+                    Text(
+                        if (allGood) "Island is ready" else "A little setup is left",
+                        fontWeight = FontWeight.SemiBold, fontSize = 17.sp,
+                    )
+                    Text(
+                        if (allGood) "It starts by itself. There is nothing to start here."
+                        else "Finish the steps below. Each one turns on part of the island.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp,
+                    )
+                }
             }
         }
 
-        if (!listenerOn) {
-            Text("For now-playing: allow notification access for Island. (If it is greyed out, open Island's App info, tap the three dots, and choose \"Allow restricted settings\" first.)")
-            Button(onClick = {
-                context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
-            }) { Text("Grant notification access") }
-        } else {
-            Text("Notification access granted. Music will show up on its own.")
-            Text("Media status: ${IslandBus.mediaStatus}", style = MaterialTheme.typography.bodySmall)
-            Text("Calls: ${IslandBus.callDebug}", style = MaterialTheme.typography.bodySmall)
-            Text("Call time: ${IslandBus.callTimeDebug}", style = MaterialTheme.typography.bodySmall)
-            Text("Timer notification: ${IslandBus.timerDebug}", style = MaterialTheme.typography.bodySmall)
-            Text("Timer chip: ${IslandBus.timerChipDebug}", style = MaterialTheme.typography.bodySmall)
-            Text("Timer buttons: ${IslandBus.timerCmdDebug}", style = MaterialTheme.typography.bodySmall)
-            Text("Last tap: ${IslandBus.tapDebug}", style = MaterialTheme.typography.bodySmall)
-            Text("Maps: ${IslandBus.navDebug}", style = MaterialTheme.typography.bodySmall)
-            Text("Camera in use: ${IslandBus.camActive}, microphone in use: ${IslandBus.micActive}", style = MaterialTheme.typography.bodySmall)
-            Text("App in front: ${IslandBus.foregroundPackage.ifEmpty { "(none seen yet)" }}, music app: ${IslandBus.mediaPackage.ifEmpty { "(none)" }}", style = MaterialTheme.typography.bodySmall)
+        // ---- Setup
+        Heading("Setup")
+        Card {
+            Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
+                Step(
+                    done = islandReady,
+                    title = "Show the island",
+                    text = if (a11yOn) "On, using Accessibility. You can touch the island in every app."
+                    else "Turn on Island under Accessibility, in Installed apps. That lets you touch it in every app.",
+                    button = if (a11yOn) null else "Open Accessibility",
+                ) { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+                if (!a11yOn) {
+                    if (!canOverlay) {
+                        Step(
+                            done = false,
+                            title = "Or: basic overlay",
+                            text = "A simpler option. Touches near the top of some apps will not reach it.",
+                            button = "Allow overlay",
+                        ) {
+                            context.startActivity(
+                                Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${context.packageName}")),
+                            )
+                        }
+                    } else {
+                        Step(
+                            done = true,
+                            title = "Basic overlay allowed",
+                            text = "Start it here if you are not using Accessibility.",
+                            button = "Start island",
+                        ) {
+                            if (Build.VERSION.SDK_INT >= 33) notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                            context.startForegroundService(Intent(context, IslandService::class.java))
+                        }
+                    }
+                }
+                Step(
+                    done = listenerOn,
+                    title = "Notification access",
+                    text = "Lets the island see music, calls, timers and navigation.",
+                    button = if (listenerOn) null else "Allow access",
+                ) { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
+                Step(
+                    done = batteryFree,
+                    title = "Run in the background",
+                    text = "Stops Android from putting the island to sleep. On Samsung also add Island to \"Never auto sleeping apps\" in Settings, Battery.",
+                    button = if (batteryFree) null else "Allow",
+                ) {
+                    context.startActivity(
+                        Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${context.packageName}")),
+                    )
+                }
+                Step(
+                    done = callGranted,
+                    title = "Call control (optional)",
+                    text = "Lets you answer and hang up from the island.",
+                    button = if (callGranted) null else "Allow",
+                ) { callPermission.launch(Manifest.permission.ANSWER_PHONE_CALLS) }
+                Step(
+                    done = btGranted,
+                    title = "Bluetooth names (optional)",
+                    text = "Shows the name of a device when it connects.",
+                    button = if (btGranted) null else "Allow",
+                ) { btPermission.launch(Manifest.permission.BLUETOOTH_CONNECT) }
+            }
         }
-
-        if (!batteryFree) {
-            Text("Keep Island alive: allow it to run in the background without battery limits. On Samsung phones also open Settings, Battery, Background usage limits, and make sure Island is in \"Never auto sleeping apps\".")
-            Button(onClick = {
-                context.startActivity(
-                    Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${context.packageName}")),
-                )
-            }) { Text("Allow background running") }
-        } else {
-            Text("Background running allowed.", style = MaterialTheme.typography.bodySmall)
-        }
-        if (!callGranted) {
-            Text("To hang up or answer phone calls from the island, allow call control.")
-            Button(onClick = { callPermission.launch(Manifest.permission.ANSWER_PHONE_CALLS) }) { Text("Allow call control") }
-        }
-        if (!btGranted) {
-            Text("To show the name of a Bluetooth device when it connects, allow Bluetooth access.")
-            Button(onClick = { btPermission.launch(Manifest.permission.BLUETOOTH_CONNECT) }) { Text("Allow Bluetooth names") }
-        }
-
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            androidx.compose.material3.Switch(
-                checked = IslandBus.privacyEnabled,
-                onCheckedChange = { on ->
-                    IslandBus.privacyEnabled = on
-                    context.getSharedPreferences("island", android.content.Context.MODE_PRIVATE)
-                        .edit().putBoolean("privacy_dots", on).apply()
-                },
+        if (!a11yOn || !listenerOn) {
+            Text(
+                "A switch greyed out? Open Island's App info, tap the three dots at the top right, and choose " +
+                        "\"Allow restricted settings\". Then try again.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp,
             )
-            Text("Camera and microphone dots")
-        }
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            androidx.compose.material3.Switch(
-                checked = IslandBus.lockPlayer,
-                onCheckedChange = { on ->
-                    IslandBus.lockPlayer = on
-                    context.getSharedPreferences("island", android.content.Context.MODE_PRIVATE)
-                        .edit().putBoolean("lock_player", on).apply()
-                },
-            )
-            Text("Music player on the lock screen")
         }
 
-        Text("Try it", style = MaterialTheme.typography.titleMedium)
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Button(onClick = { IslandBus.state = IslandState.Charging }) { Text("Charging") }
-            Button(onClick = { IslandBus.demoTimer() }) { Text("Timer") }
-            Button(onClick = { IslandBus.state = IslandState.Music }) { Text("Music") }
+        // ---- Features
+        Heading("Features")
+        Card {
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                PrefSwitch(context, "Camera and microphone dots", "A green or orange dot beside the camera while one is in use.", "privacy_dots", IslandBus.privacyEnabled) { IslandBus.privacyEnabled = it }
+                PrefSwitch(context, "Recording and hotspot dots", "Red while the screen is recorded, green while the hotspot is on.", "status_pills", IslandBus.statusPills) { IslandBus.statusPills = it }
+                PrefSwitch(context, "Music on the lock screen", "A music player near the bottom while locked and playing.", "lock_player", IslandBus.lockPlayer) { IslandBus.lockPlayer = it }
+            }
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Button(onClick = { IslandBus.demoNav() }) { Text("Nav") }
-            Button(onClick = { IslandBus.camActive = !IslandBus.camActive }) { Text("Cam") }
-            Button(onClick = { IslandBus.micActive = !IslandBus.micActive }) { Text("Mic") }
+        Text(
+            "Tap a compact island to open it, tap again to close it, and swipe it up to dismiss it. " +
+                    "Touch the camera to bring a dismissed one back.",
+            color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp,
+        )
+
+        // ---- Developer tools, tucked away
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Heading("Developer tools", Modifier.weight(1f))
+            TextButton(onClick = { devTools = !devTools }) { Text(if (devTools) "Hide" else "Show") }
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Button(onClick = { IslandBus.demoCall() }) { Text("Call") }
-            Button(onClick = { IslandBus.demoCall(incoming = true) }) { Text("Incoming") }
-            OutlinedButton(onClick = { IslandBus.state = IslandState.Idle }) { Text("Idle") }
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Button(onClick = {
-                IslandBus.alert("\uD83D\uDD15", "Silent", androidx.compose.ui.graphics.Color(0xFFFF9F0A))
-            }) { Text("Alert") }
+        if (devTools) DeveloperTools(listenerOn)
+    }
+}
+
+@Composable
+private fun DeveloperTools(listenerOn: Boolean) {
+    val small = MaterialTheme.typography.bodySmall
+    Card {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Try it", fontWeight = FontWeight.SemiBold)
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Button(onClick = { IslandBus.state = IslandState.Charging }) { Text("Charging") }
+                Button(onClick = { IslandBus.demoTimer() }) { Text("Timer") }
+                Button(onClick = { IslandBus.state = IslandState.Music }) { Text("Music") }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Button(onClick = { IslandBus.demoNav() }) { Text("Nav") }
+                Button(onClick = { IslandBus.camActive = !IslandBus.camActive }) { Text("Cam") }
+                Button(onClick = { IslandBus.micActive = !IslandBus.micActive }) { Text("Mic") }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Button(onClick = { IslandBus.recActive = !IslandBus.recActive }) { Text("Rec") }
+                Button(onClick = { IslandBus.hotspotAp = !IslandBus.hotspotAp }) { Text("Hotspot") }
+                Button(onClick = { IslandBus.demoStopwatch() }) { Text("Stopwatch") }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Button(onClick = { IslandBus.alert("🪫", "Low battery", Color(0xFFFF453A), 20) }) { Text("Low battery") }
+                Button(onClick = { IslandBus.alert("🔦", "Flashlight", Color(0xFFFFD60A)) }) { Text("Flashlight") }
+                Button(onClick = { IslandBus.alert("🔕", "Silent", Color(0xFFFF9F0A)) }) { Text("Alert") }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Button(onClick = { IslandBus.demoCall() }) { Text("Call") }
+                Button(onClick = { IslandBus.demoCall(incoming = true) }) { Text("Incoming") }
+                OutlinedButton(onClick = { IslandBus.state = IslandState.Idle }) { Text("Idle") }
+            }
             Button(onClick = {
                 // Two things at once: a timer plus music.
                 IslandBus.demoTimer()
                 IslandBus.mediaTitle = "Demo song"
                 IslandBus.mediaPlaying = true
                 IslandBus.state = IslandState.Music
-            }) { Text("Split") }
+            }) { Text("Split (timer + music)") }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Switch(checked = IslandBus.showOutline, onCheckedChange = { IslandBus.showOutline = it })
+                Text("Red outline on the idle pill")
+            }
         }
+    }
+    if (listenerOn) {
+        Card {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("What Island sees", fontWeight = FontWeight.SemiBold)
+                Text("Media: ${IslandBus.mediaStatus}", style = small)
+                Text("Calls: ${IslandBus.callDebug}", style = small)
+                Text("Call time: ${IslandBus.callTimeDebug}", style = small)
+                Text("Timer notification: ${IslandBus.timerDebug}", style = small)
+                Text("Timer chip: ${IslandBus.timerChipDebug}", style = small)
+                Text("Timer buttons: ${IslandBus.timerCmdDebug}", style = small)
+                Text("Last tap: ${IslandBus.tapDebug}", style = small)
+                Text("Maps: ${IslandBus.navDebug}", style = small)
+                Text("Camera in use: ${IslandBus.camActive}, microphone: ${IslandBus.micActive}", style = small)
+                Text("Recording: ${IslandBus.recActive}, hotspot: ${IslandBus.hotspotActive}", style = small)
+                Text(
+                    "App in front: ${IslandBus.foregroundPackage.ifEmpty { "(none seen yet)" }}, music app: ${IslandBus.mediaPackage.ifEmpty { "(none)" }}",
+                    style = small,
+                )
+            }
+        }
+    }
+}
 
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Switch(checked = IslandBus.showOutline, onCheckedChange = { IslandBus.showOutline = it })
-            Text("Red outline on idle pill (to see where it sits)")
+// ---------------------------------------------------------------------------------------------
+// Pieces
+// ---------------------------------------------------------------------------------------------
+
+@Composable
+private fun Heading(text: String, modifier: Modifier = Modifier) {
+    Text(
+        text.uppercase(), modifier = modifier.padding(start = 4.dp),
+        color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+        letterSpacing = 1.sp,
+    )
+}
+
+@Composable
+private fun Card(color: Color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f), content: @Composable () -> Unit) {
+    Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(color).padding(18.dp)) { content() }
+}
+
+@Composable
+private fun Dot(color: Color) {
+    Box(Modifier.size(14.dp).clip(CircleShape).background(color))
+}
+
+/** One line of the checklist: a tick or a ring, what it is, and a button while it is still to do. */
+@Composable
+private fun Step(done: Boolean, title: String, text: String, button: String?, onClick: () -> Unit) {
+    Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.Top) {
+        Box(
+            Modifier.padding(top = 2.dp).size(22.dp).clip(CircleShape)
+                .background(if (done) Good else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)),
+            contentAlignment = Alignment.Center,
+        ) { if (done) Text("✓", color = Color.Black, fontSize = 13.sp, fontWeight = FontWeight.Bold) }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+            Text(text, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+            if (button != null) {
+                Spacer(Modifier.height(6.dp))
+                Button(onClick = onClick) { Text(button) }
+            }
         }
-        Text(
-            "Tap a compact island to open it, tap again to close it, swipe it up to dismiss.",
-            style = MaterialTheme.typography.bodySmall,
+    }
+}
+
+@Composable
+private fun PrefSwitch(context: Context, title: String, text: String, key: String, value: Boolean, onChange: (Boolean) -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, fontWeight = FontWeight.Medium, fontSize = 16.sp)
+            Text(text, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+        }
+        Spacer(Modifier.width(12.dp))
+        Switch(
+            checked = value,
+            onCheckedChange = { on ->
+                onChange(on)
+                context.getSharedPreferences("island", Context.MODE_PRIVATE).edit().putBoolean(key, on).apply()
+            },
         )
     }
 }
 
-private fun isListenerOn(context: android.content.Context): Boolean =
+private fun has(context: Context, permission: String): Boolean =
+    context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
+
+private fun isListenerOn(context: Context): Boolean =
     androidx.core.app.NotificationManagerCompat.getEnabledListenerPackages(context).contains(context.packageName)
 
-private fun isAccessibilityOn(context: android.content.Context): Boolean {
+private fun isAccessibilityOn(context: Context): Boolean {
     val enabled = Settings.Secure.getString(context.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
         ?: return false
-    val me = android.content.ComponentName(context, IslandAccessibilityService::class.java).flattenToString()
+    val me = ComponentName(context, IslandAccessibilityService::class.java).flattenToString()
     return enabled.split(':').any { it.equals(me, ignoreCase = true) }
 }

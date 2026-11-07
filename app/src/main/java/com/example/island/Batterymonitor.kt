@@ -14,6 +14,7 @@ import androidx.core.content.ContextCompat
 class BatteryMonitor(private val context: Context) {
 
     private var lastPlugged: Boolean? = null
+    private var lastLevel = -1
 
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, intent: Intent) = handle(intent)
@@ -43,6 +44,18 @@ class BatteryMonitor(private val context: Context) {
         val ms = bm.computeChargeTimeRemaining()
         IslandBus.minutesToFull = if (plugged && ms > 0) (ms / 60_000L).toInt() else -1
 
+        // Low battery (20 % and 10 %) and fully charged: a short pop-up with a battery that fills up.
+        val pct = IslandBus.batteryPercent
+        val prevLevel = lastLevel
+        lastLevel = pct
+        if (prevLevel >= 0 && pct != prevLevel) {
+            if (!plugged && prevLevel > 20 && pct <= 20 || !plugged && prevLevel > 10 && pct <= 10) {
+                IslandBus.alert("🪫", "Low battery", RED, pct)
+            } else if (plugged && prevLevel < 100 && pct >= 100) {
+                IslandBus.alert("🔋", "Fully charged", GREEN, pct)
+            }
+        }
+
         val before = lastPlugged
         lastPlugged = plugged
         if (before == null || before == plugged) return // first reading, or nothing changed about the charger
@@ -60,6 +73,9 @@ class BatteryMonitor(private val context: Context) {
     }
 
     companion object {
+        private val RED = androidx.compose.ui.graphics.Color(0xFFFF453A)
+        private val GREEN = androidx.compose.ui.graphics.Color(0xFF30D158)
+
         /** How long the compact charging pill stays before the island goes idle again. */
         const val CHARGE_SHOW_MS = 4000L
     }

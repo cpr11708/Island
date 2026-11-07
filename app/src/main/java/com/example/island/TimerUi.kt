@@ -43,7 +43,7 @@ private val TGray = Color(0xFF8E8E93)
 private val TDark = Color(0xFF3A3A3C)
 
 private fun timerClock(ms: Long): String {
-    val t = (ms + 999) / 1000
+    val t = (if (IslandBus.timerStopwatch) ms else ms + 999) / 1000
     return if (t >= 3600) "%d:%02d:%02d".format(t / 3600, t % 3600 / 60, t % 60) else "%d:%02d".format(t / 60, t % 60)
 }
 
@@ -64,7 +64,7 @@ private fun remaining(): Long {
 @Composable
 internal fun TimerCompact() {
     val left = remaining()
-    val finished = IslandBus.timerKnown && !IslandBus.timerPaused && left <= 0
+    val finished = IslandBus.timerKnown && !IslandBus.timerPaused && !IslandBus.timerStopwatch && left <= 0
     // When the time runs out, open up so the Stop button is right there.
     LaunchedEffect(finished) {
         if (finished && IslandBus.state == IslandState.Timer) IslandBus.state = IslandState.TimerOpen
@@ -87,7 +87,7 @@ internal fun TimerCompact() {
 internal fun TimerOpenContent() {
     val left = remaining()
     val known = IslandBus.timerKnown
-    val finished = known && !IslandBus.timerPaused && left <= 0
+    val finished = known && !IslandBus.timerPaused && !IslandBus.timerStopwatch && left <= 0
     Row(
         Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,

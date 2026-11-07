@@ -211,14 +211,34 @@ object IslandBus {
     /** What the Clock notification contained, shown in the app to help diagnose timers. */
     var timerDebug by mutableStateOf("No timer seen")
 
-    fun timerRemainingMs(now: Long = System.currentTimeMillis()): Long =
-        if (timerPaused) timerPausedMs else (timerEndMs - now).coerceAtLeast(0L)
+    /** True when the Clock's stopwatch is showing: [timerEndMs] is then the moment it started, and the time counts up. */
+    var timerStopwatch by mutableStateOf(false)
+
+    fun timerRemainingMs(now: Long = System.currentTimeMillis()): Long = when {
+        timerPaused -> timerPausedMs
+        timerStopwatch -> (now - timerEndMs).coerceAtLeast(0L)
+        else -> (timerEndMs - now).coerceAtLeast(0L)
+    }
+
+    fun demoStopwatch() {
+        timerReal = false
+        timerKey = "demo"
+        timerDismissedKey = null
+        timerLabel = "Stopwatch"
+        timerStopwatch = true
+        timerPaused = false
+        timerKnown = true
+        timerEndMs = System.currentTimeMillis() - 5_000
+        timerActions = listOf(CallAction("Pause", false, null), CallAction("Stop", false, null))
+        state = IslandState.Timer
+    }
 
     fun demoTimer() {
         timerReal = false
         timerKey = "demo"
         timerDismissedKey = null
         timerLabel = "Timer"
+        timerStopwatch = false
         timerPaused = false
         timerKnown = true
         timerEndMs = System.currentTimeMillis() + 60_000
@@ -235,7 +255,7 @@ object IslandBus {
                 timerActions = listOf(CallAction("Resume", false, null), CallAction("Stop", false, null))
             }
             "Resume" -> {
-                timerEndMs = System.currentTimeMillis() + timerPausedMs
+                timerEndMs = if (timerStopwatch) System.currentTimeMillis() - timerPausedMs else System.currentTimeMillis() + timerPausedMs
                 timerPaused = false
                 timerActions = listOf(CallAction("Pause", false, null), CallAction("Stop", false, null))
             }
@@ -278,6 +298,8 @@ object IslandBus {
     var alertText by mutableStateOf("")
     var alertColor by mutableStateOf(Color.White)
     var alertKey by mutableIntStateOf(0)
+    /** 0..100 when the pop-up shows a battery (low battery, fully charged, earbuds), otherwise -1. */
+    var alertBattery by mutableIntStateOf(-1)
     var alertReturn = IslandState.Idle
 
     /** The camera / microphone is in use by some app (shows the green / orange dots). */
@@ -307,6 +329,12 @@ object IslandBus {
     var privacyEnabled by mutableStateOf(false)
     var camActive by mutableStateOf(false)
     var micActive by mutableStateOf(false)
+    /** Screen recording, and hotspot / tethering (from a broadcast, or from the phone's own notification). */
+    var recActive by mutableStateOf(false)
+    var hotspotAp by mutableStateOf(false)
+    var hotspotNote by mutableStateOf(false)
+    val hotspotActive: Boolean get() = hotspotAp || hotspotNote
+    var statusPills by mutableStateOf(true)
 
     // Navigation (Google Maps).
     var navKey by mutableStateOf("")
@@ -342,19 +370,31 @@ object IslandBus {
         if (state == IslandState.Nav || state == IslandState.NavOpen) state = restingState()
     }
 
-    fun alert(icon: String, text: String, color: Color) {
+    /** Shows a short pop-up. Returns false when something open (a call, an expanded island) is in the way. */
+    fun alert(icon: String, text: String, color: Color, battery: Int = -1): Boolean {
         val s = state
         val ok = s == IslandState.Idle || s == IslandState.Charging || s == IslandState.Music ||
                 s == IslandState.Timer || s == IslandState.Call || s == IslandState.Nav || s == IslandState.Alert
-        if (!ok) return
+        if (!ok) return false
         if (s != IslandState.Alert) alertReturn = s
         alertIcon = icon
         alertText = text
         alertColor = color
+        alertBattery = battery
         alertKey++
         autoIdleMs = 2500L
         autoIdle = true
         state = IslandState.Alert
+        return true
+    }
+
+    /** The battery level of a Bluetooth device arrives a moment after it connects: add it to its pop-up if still showing. */
+    fun alertAddBattery(forKey: Int, level: Int) {
+        if (state != IslandState.Alert || alertKey != forKey) return
+        alertBattery = level
+        alertKey++
+        autoIdleMs = 2500L
+        autoIdle = true
     }
 
     /** While split: the kind on the left (the camera pill) and on the right (the small pill), and where the right one is. */
@@ -589,7 +629,7 @@ object IslandBus {
             IslandState.Music, IslandState.Call, IslandState.Timer, IslandState.Nav -> Unit
             IslandState.NavOpen -> state = IslandState.Nav
             // An open timer closes to the compact timer, unless it has finished (you need the Stop button).
-            IslandState.TimerOpen -> if (timerRemainingMs() > 0 || timerPaused) state = IslandState.Timer
+            IslandState.TimerOpen -> if (timerRemainingMs() > 0 || timerPaused || timerStopwatch) state = IslandState.Timer
             // An open call closes to the compact call, except while it is still ringing (you need the buttons).
             IslandState.CallOpen -> if (!callIncoming) state = IslandState.Call
             IslandState.MusicOpen -> state = IslandState.Music
@@ -958,8 +998,14 @@ fun Island(
     // Camera / microphone dots. They stay a moment after the app stops, so a quick flicker is still readable.
     var privCam by remember { mutableStateOf(false) }
     var privMic by remember { mutableStateOf(false) }
+    var privRec by remember { mutableStateOf(false) }
+    var privHot by remember { mutableStateOf(false) }
     val camShow = IslandBus.camActive && IslandBus.privacyEnabled
     val micShow = IslandBus.micActive && IslandBus.privacyEnabled
+    val recShow = IslandBus.recActive && IslandBus.statusPills
+    val hotShow = IslandBus.hotspotActive && IslandBus.statusPills
+    LaunchedEffect(recShow) { if (recShow) privRec = true else { delay(600); privRec = false } }
+    LaunchedEffect(hotShow) { if (hotShow) privHot = true else { delay(600); privHot = false } }
     LaunchedEffect(camShow) {
         if (camShow) privCam = true else { if (IslandBus.privacyEnabled) delay(1500); privCam = false }
     }
@@ -967,9 +1013,11 @@ fun Island(
         if (micShow) privMic = true else { if (IslandBus.privacyEnabled) delay(1500); privMic = false }
     }
     val privAnim by animateFloatAsState(
-        if (privCam || privMic) 1f else 0f, spring(dampingRatio = 0.7f, stiffness = 380f), label = "privacy",
+        if (privCam || privMic || privRec || privHot) 1f else 0f, spring(dampingRatio = 0.7f, stiffness = 380f), label = "privacy",
     )
-    val privExtra = 20f // dp the dots pill reaches past the camera's right edge
+    // dp the dots pill reaches past the camera's right edge: a second column of dots (recording, hotspot) widens it.
+    val privCols = (if (privCam || privMic) 1 else 0) + (if (privRec || privHot) 1 else 0)
+    val privExtra by animateFloatAsState(20f + 11f * (privCols - 1).coerceAtLeast(0), tween(250), label = "privacy width")
     val prev = remember { IslandPrev() }
     val splitNow by rememberUpdatedState(split)
     val splitLeftNow by rememberUpdatedState(splitLeft)
@@ -1236,12 +1284,12 @@ fun Island(
                         .requiredSize((pr - pl).dp, pillH.dp)
                         .clip(RoundedCornerShape((pillH / 2).dp)).background(Color.Black),
                 ) {
-                    PrivacyDots(privCam, privMic, Modifier.align(Alignment.CenterEnd).padding(end = 7.dp).graphicsLayer { alpha = f })
+                    PrivacyDots(privCam, privMic, privRec, privHot, Modifier.align(Alignment.CenterEnd).padding(end = 7.dp).graphicsLayer { alpha = f })
                 }
             } else {
                 // Open island: just the dots, in its top right corner.
                 PrivacyDots(
-                    privCam, privMic,
+                    privCam, privMic, privRec, privHot,
                     Modifier.padding(top = TOUCH_PAD + 14.dp).offset(x = (r - 16f).dp),
                 )
             }
@@ -1273,41 +1321,58 @@ fun Island(
 // ---------------------------------------------------------------------------------------------
 
 /**
- * The privacy dots: green for the camera (top), orange for the microphone (below). One alone sits in the middle.
- * When the second one switches on it splits off from the first; when one of two switches off, they merge.
+ * The status dots. First column: green for the camera (top), orange for the microphone (below). Second column, when
+ * needed: red for screen recording (top), green for the hotspot (below). One alone sits in the middle of its column.
  */
 @Composable
-private fun PrivacyDots(cam: Boolean, mic: Boolean, modifier: Modifier) {
-    val yCam = remember { Animatable(0f) }
-    val yMic = remember { Animatable(0f) }
-    val aCam = remember { Animatable(0f) }
-    val aMic = remember { Animatable(0f) }
-    var prevCam by remember { mutableStateOf(false) }
-    var prevMic by remember { mutableStateOf(false) }
-    LaunchedEffect(cam, mic) {
-        val spec = spring<Float>(dampingRatio = 0.8f, stiffness = 500f)
-        // A dot that switches on starts where the other one is, then they move apart.
-        if (cam && !prevCam) yCam.snapTo(if (prevMic) yMic.value else 0f)
-        if (mic && !prevMic) yMic.snapTo(if (prevCam) yCam.value else 0f)
-        prevCam = cam
-        prevMic = mic
-        val both = cam && mic
-        coroutineScope {
-            launch { aCam.animateTo(if (cam) 1f else 0f, tween(200)) }
-            launch { aMic.animateTo(if (mic) 1f else 0f, tween(200)) }
-            // A dot that switches off slides to the middle (where the remaining one is going) while it fades.
-            launch { yCam.animateTo(if (both) -5f else 0f, spec) }
-            launch { yMic.animateTo(if (both) 5f else 0f, spec) }
+private fun PrivacyDots(cam: Boolean, mic: Boolean, rec: Boolean, hot: Boolean, modifier: Modifier) {
+    val v1 = cam || mic
+    val v2 = rec || hot
+    val w1 by animateDpAsState(if (v1) (if (v2) 11.dp else 7.dp) else 0.dp, tween(250), label = "dots 1")
+    val w2 by animateDpAsState(if (v2) 7.dp else 0.dp, tween(250), label = "dots 2")
+    Row(modifier.height(24.dp)) {
+        Box(Modifier.width(w1).fillMaxHeight()) {
+            DotPair(cam, Color(0xFF30D158), mic, Color(0xFFFF9F0A), Modifier.align(Alignment.CenterStart))
+        }
+        Box(Modifier.width(w2).fillMaxHeight()) {
+            DotPair(rec, Color(0xFFFF453A), hot, Color(0xFF30D158), Modifier.align(Alignment.CenterStart))
         }
     }
-    Box(modifier.size(7.dp, 24.dp), contentAlignment = Alignment.Center) {
+}
+
+/** Two dots, one above the other. When the second switches on it splits off the first; when one of two goes off, they merge. */
+@Composable
+private fun DotPair(a: Boolean, colorA: Color, b: Boolean, colorB: Color, modifier: Modifier) {
+    val yA = remember { Animatable(0f) }
+    val yB = remember { Animatable(0f) }
+    val alphaA = remember { Animatable(0f) }
+    val alphaB = remember { Animatable(0f) }
+    var prevA by remember { mutableStateOf(false) }
+    var prevB by remember { mutableStateOf(false) }
+    LaunchedEffect(a, b) {
+        val spec = spring<Float>(dampingRatio = 0.8f, stiffness = 500f)
+        // A dot that switches on starts where the other one is, then they move apart.
+        if (a && !prevA) yA.snapTo(if (prevB) yB.value else 0f)
+        if (b && !prevB) yB.snapTo(if (prevA) yA.value else 0f)
+        prevA = a
+        prevB = b
+        val both = a && b
+        coroutineScope {
+            launch { alphaA.animateTo(if (a) 1f else 0f, tween(200)) }
+            launch { alphaB.animateTo(if (b) 1f else 0f, tween(200)) }
+            // A dot that switches off slides to the middle (where the remaining one is going) while it fades.
+            launch { yA.animateTo(if (both) -5f else 0f, spec) }
+            launch { yB.animateTo(if (both) 5f else 0f, spec) }
+        }
+    }
+    Box(modifier.requiredSize(7.dp, 24.dp), contentAlignment = Alignment.Center) {
         Box(
-            Modifier.offset(y = yCam.value.dp).graphicsLayer { alpha = aCam.value }
-                .size(7.dp).clip(CircleShape).background(Color(0xFF30D158)),
+            Modifier.offset(y = yA.value.dp).graphicsLayer { alpha = alphaA.value }
+                .size(7.dp).clip(CircleShape).background(colorA),
         )
         Box(
-            Modifier.offset(y = yMic.value.dp).graphicsLayer { alpha = aMic.value }
-                .size(7.dp).clip(CircleShape).background(Color(0xFFFF9F0A)),
+            Modifier.offset(y = yB.value.dp).graphicsLayer { alpha = alphaB.value }
+                .size(7.dp).clip(CircleShape).background(colorB),
         )
     }
 }
@@ -1318,10 +1383,10 @@ private val Gray = Color(0xFF8E8E93)
 
 /** A battery shape that fills up to [percent]. */
 @Composable
-private fun BatteryIcon(percent: Int, modifier: Modifier) {
+internal fun BatteryIcon(percent: Int, modifier: Modifier, color: Color = Green) {
     Box(modifier.clip(RoundedCornerShape(4.dp)).background(Color(0xFF3A3A3C))) {
         Box(
-            Modifier.fillMaxHeight().fillMaxWidth((percent.coerceIn(4, 100)) / 100f).background(Green),
+            Modifier.fillMaxHeight().fillMaxWidth((percent.coerceIn(4, 100)) / 100f).background(color),
         )
     }
 }
