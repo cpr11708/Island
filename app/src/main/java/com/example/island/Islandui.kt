@@ -72,6 +72,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
@@ -304,17 +305,42 @@ object IslandBus {
 
     /** The camera / microphone is in use by some app (shows the green / orange dots). */
     /** The user's switch (in the app): open the music player by itself on the lock screen. On by default. */
-    var lockPlayer by mutableStateOf(true)
+    var lockPlayer by mutableStateOf(false)
+    /** The lock screen player is on screen right now (the island does not show music then), and whether it is shrunk. */
+    var lockPlayerShowing by mutableStateOf(false)
+    /** The screen is off, or has only just come on: the lock screen player is not animated in then. */
+    var wakeSnap by mutableStateOf(false)
+    /** The notification shade is pulled down over the lock screen (worked out from which windows are on screen). */
+    var lockShadeOpen by mutableStateOf(false)
+    var lockMinimized by mutableStateOf(false)
+    /** True while the lock screen player is being held and moved. */
+    var lockDragging by mutableStateOf(false)
+    /** The windows on screen while locked, for working out how to tell that the notification shade is open. */
+    var lockWindowsDebug by mutableStateOf("")
+    /** While moving it: is the player clinging to the middle of the screen / to its usual height. */
+    var lockSnapX by mutableStateOf(false)
+    var lockSnapY by mutableStateOf(false)
+    /** The lock screen player's sizes (dp): the big one is as wide as [lockFullWidthDp], set when the overlay is built. */
+    var lockFullWidthDp by mutableStateOf(360f)
+    const val LOCK_MIN_W_DP = 250f
+    const val LOCK_MIN_H_DP = 60f
+    const val LOCK_BIG_H_DP = 160f
+
+    /** Nothing has been on the island for 30 s or more: touching the camera then brings nothing back. */
+    var restoreStale by mutableStateOf(false)
+    var lastPresentMs = 0L
 
     /** Something was swiped away or timed out, and can be brought back. */
     val hasHidden: Boolean
-        get() = (callReal && callDismissedKey == callKey) ||
+        get() = !restoreStale && (callReal && callDismissedKey == callKey) ||
                 (timerKey.isNotEmpty() && timerDismissedKey == timerKey) ||
                 (navKey.isNotEmpty() && navDismissedKey == navKey) ||
                 (mediaPackage.isNotEmpty() && mediaTitle.isNotEmpty() && (mediaHiddenTitle == mediaTitle || !mediaLive))
 
     /** Brings back everything that was swiped away (and paused music that had timed out). */
     fun restoreDismissed() {
+        lastPresentMs = android.os.SystemClock.elapsedRealtime()
+        restoreStale = false
         callDismissedKey = null
         timerDismissedKey = null
         navDismissedKey = null
@@ -326,7 +352,7 @@ object IslandBus {
     }
 
     /** The user's switch (in the app) for the dots. Off by default. */
-    var privacyEnabled by mutableStateOf(false)
+    var privacyEnabled by mutableStateOf(true)
     var camActive by mutableStateOf(false)
     var micActive by mutableStateOf(false)
     /** Screen recording, and hotspot / tethering (from a broadcast, or from the phone's own notification). */
@@ -334,7 +360,7 @@ object IslandBus {
     var hotspotAp by mutableStateOf(false)
     var hotspotNote by mutableStateOf(false)
     val hotspotActive: Boolean get() = hotspotAp || hotspotNote
-    var statusPills by mutableStateOf(true)
+    var statusPills by mutableStateOf(false)
 
     // Navigation (Google Maps).
     var navKey by mutableStateOf("")
@@ -479,6 +505,8 @@ object IslandBus {
 
     /** True while you are inside the app a pill belongs to (the music app, Maps, Clock, the phone app): it stays out of the way. */
     fun hiddenByApp(kind: IslandState): Boolean {
+        // Never two music players at once: while the lock screen one is showing, the island stays out of its way.
+        if (kind == IslandState.Music && lockPlayerShowing) return true
         val fg = foregroundPackage
         if (fg.isEmpty()) return false
         return when (kind) {
@@ -530,21 +558,34 @@ object IslandBus {
     var appContext: android.content.Context? = null
 
     /** A quick tap on a compact island opens the app behind that part of it: the music app, the phone app, the Clock. */
+    /** Opens the app the music is coming from (on the lock screen Android asks to unlock first). */
+    fun openMusicApp() {
+        val ctx = appContext
+        val locked = ctx?.getSystemService(android.app.KeyguardManager::class.java)?.isKeyguardLocked == true
+        if (ctx != null && locked) {
+            // Locked: ask to unlock first, then open it (see UnlockOpenActivity).
+            if (runCatching { UnlockOpenActivity.start(ctx) }.isSuccess) return
+        }
+        openMusicAppNow()
+    }
+
+    fun openMusicAppNow() {
+        val ok = mediaOpen?.let { sendPI(it) } ?: false
+        if (!ok) {
+            val ctx = appContext
+            val launch = ctx?.packageManager?.getLaunchIntentForPackage(mediaPackage)
+            if (ctx != null && launch != null) {
+                runCatching { ctx.startActivity(launch.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)) }
+            }
+        }
+    }
+
     fun openAppAt(xDp: Float) {
         if (state.isTall()) return
         val kind = (kindAt(xDp) ?: state).base()
         tapDebug = "tap on $kind: ctx=${appContext != null} timerIntent=${timerOpen != null} callIntent=${callOpen != null} mediaIntent=${mediaOpen != null}"
         when (kind) {
-            IslandState.Music -> {
-                val ok = mediaOpen?.let { sendPI(it) } ?: false
-                if (!ok) {
-                    val ctx = appContext
-                    val launch = ctx?.packageManager?.getLaunchIntentForPackage(mediaPackage)
-                    if (ctx != null && launch != null) {
-                        runCatching { ctx.startActivity(launch.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)) }
-                    }
-                }
-            }
+            IslandState.Music -> openMusicApp()
             IslandState.Call -> {
                 val ok = callOpen?.let { sendPI(it) } ?: false
                 if (!ok) {
@@ -743,6 +784,13 @@ fun IslandRoot(
                 if (r != IslandState.Idle) IslandBus.state = r
             }
             split = IslandBus.splitPair(stateNow)
+            val nowMs = android.os.SystemClock.elapsedRealtime()
+            if (IslandBus.state != IslandState.Idle || IslandBus.activeList().isNotEmpty() || IslandBus.lastPresentMs == 0L) {
+                IslandBus.lastPresentMs = nowMs
+                IslandBus.restoreStale = false
+            } else if (nowMs - IslandBus.lastPresentMs > 30_000) {
+                IslandBus.restoreStale = true
+            }
             delay(400)
         }
     }
@@ -795,7 +843,7 @@ fun IslandRoot(
 // ---------------------------------------------------------------------------------------------
 
 /**
- * Hold ~600 ms to open or close the island (it fires while the finger is still down), or swipe up to dismiss it. A
+ * Hold ~600 ms to open or close the island (it fires while the finger is still down), or swipe up, or in from a side towards the camera, to dismiss it. A
  * finger may wobble up to 20 dp during the hold. A quick tap does nothing.
  */
 internal fun Modifier.islandGestures(): Modifier = this.pointerInput(Unit) {
@@ -808,6 +856,7 @@ internal fun Modifier.islandGestures(): Modifier = this.pointerInput(Unit) {
         try {
             val wobble = 20.dp.toPx()
             val swipe = 24.dp.toPx()
+            val inward = 14.dp.toPx()
             // 0 = let go early or wandered off, 1 = swiped up, null = the hold time ran out.
             val early = withTimeoutOrNull(HOLD_MS) {
                 var out = 0
@@ -822,6 +871,11 @@ internal fun Modifier.islandGestures(): Modifier = this.pointerInput(Unit) {
                     val dy = c.position.y - down.position.y
                     val dx = c.position.x - down.position.x
                     if (dy < -swipe) { out = 1; break }
+                    // Swiping in from a side of the compact island towards the camera dismisses that part as well.
+                    // Starting right over the camera does not count: there is no side to swipe in from.
+                    if (!IslandBus.state.isTall() && abs(xDp) > 10f && abs(dx) > inward && abs(dx) > abs(dy) * 1.5f &&
+                        (if (xDp < 0f) dx > 0f else dx < 0f)
+                    ) { out = 1; break }
                     if (abs(dx) > wobble || abs(dy) > wobble) break
                 }
                 out
@@ -859,49 +913,161 @@ internal fun Modifier.islandGestures(): Modifier = this.pointerInput(Unit) {
  * the progress bar and the play / skip buttons. Only there while the phone is locked and some music is open.
  */
 @Composable
-fun LockPlayerRoot(onTouchable: (Boolean) -> Unit) {
+fun LockPlayerRoot(onTouchable: (Boolean, Boolean) -> Unit) {
     val view = LocalView.current
     val keyguard = remember { view.context.getSystemService(android.app.KeyguardManager::class.java) }
     var locked by remember { mutableStateOf(false) }
+    var eligible by remember { mutableStateOf(false) }
+    // This loop does not need the screen to be on, so what the player should be is already worked out when it wakes.
+    // It only appears if music is playing while the phone is locked, and goes away 30 s after the music stops.
     LaunchedEffect(Unit) {
+        var pausedSince = 0L
         while (true) {
-            locked = runCatching { keyguard.isKeyguardLocked }.getOrDefault(false)
+            val l = runCatching { keyguard.isKeyguardLocked }.getOrDefault(false)
+            locked = l
+            val now = android.os.SystemClock.elapsedRealtime()
+            if (!l) {
+                eligible = false
+                pausedSince = 0L
+            } else if (IslandBus.mediaPlaying) {
+                eligible = true
+                pausedSince = 0L
+            } else if (eligible) {
+                if (pausedSince == 0L) pausedSince = now else if (now - pausedSince > 30_000) eligible = false
+            }
+            IslandBus.lockPlayerShowing = l && eligible && IslandBus.lockPlayer &&
+                    IslandBus.mediaPackage.isNotEmpty() && IslandBus.mediaTitle.isNotEmpty()
             delay(60)
         }
     }
-    // Only appears if music is playing while the phone is locked. After 30 s without playing, it goes away.
-    var eligible by remember { mutableStateOf(false) }
-    LaunchedEffect(locked, IslandBus.mediaPlaying) {
-        if (!locked) {
-            eligible = false
-        } else if (IslandBus.mediaPlaying) {
-            eligible = true
-        } else if (eligible) {
-            delay(30_000)
-            eligible = false
+    // With the shade open the window itself slides off the bottom edge (see IslandOverlay), so the card stays solid.
+    val want = IslandBus.lockPlayerShowing && !IslandBus.lockShadeOpen
+    val wantDrawn = IslandBus.lockPlayerShowing
+    // Slides in gently, but leaves almost at once when you unlock. While the screen is off, and for a moment after it
+    // comes on, it is simply there or not: no sliding in at the moment you wake the phone.
+    val animated by animateFloatAsState(if (wantDrawn) 1f else 0f, tween(if (wantDrawn) 300 else 90), label = "lock player")
+    val shown = if (IslandBus.wakeSnap) (if (wantDrawn) 1f else 0f) else animated
+
+    // Big or small, and remembered: it stays the way you left it when the phone locks and unlocks (and after a restart).
+    val prefs = remember { view.context.getSharedPreferences("island", android.content.Context.MODE_PRIVATE) }
+    LaunchedEffect(Unit) { IslandBus.lockMinimized = prefs.getBoolean("lock_minimized", false) }
+    fun setMinimized(v: Boolean) {
+        IslandBus.lockMinimized = v
+        prefs.edit().putBoolean("lock_minimized", v).apply()
+    }
+    val minimized = IslandBus.lockMinimized
+    // The window itself grows and shrinks (the overlay animates it), so the card simply fills it.
+    LaunchedEffect(want, minimized) { onTouchable(want, minimized) }
+    // While it is being moved the rim lights up (growing it would be cut off by its own window).
+    val held by animateFloatAsState(if (IslandBus.lockDragging) 1f else 0f, tween(160), label = "lock held")
+    // The glow takes its colour from the album art, and fades to the next song's colour.
+    val artColor = remember(IslandBus.mediaArt) { artGlowColor(IslandBus.mediaArt) }
+    val glowColor by androidx.compose.animation.animateColorAsState(artColor, tween(700), label = "lock glow")
+    if (shown > 0.01f) {
+        Box(Modifier.fillMaxSize()) {
+            var drag = 0f
+            // Fully rounded ends on the small pill, rounded corners on the big player, following the window's size
+            // as it changes (a plain shape, so nothing has to be measured twice while it animates).
+            val shape = remember {
+                object : androidx.compose.ui.graphics.Shape {
+                    override fun createOutline(
+                        size: androidx.compose.ui.geometry.Size,
+                        layoutDirection: androidx.compose.ui.unit.LayoutDirection,
+                        density: androidx.compose.ui.unit.Density,
+                    ): androidx.compose.ui.graphics.Outline {
+                        val r = minOf(36.dp.value * density.density, size.height / 2f)
+                        return androidx.compose.ui.graphics.Outline.Rounded(
+                            androidx.compose.ui.geometry.RoundRect(0f, 0f, size.width, size.height, androidx.compose.ui.geometry.CornerRadius(r, r)),
+                        )
+                    }
+                }
+            }
+            Box(
+                Modifier.fillMaxSize()
+                    .graphicsLayer {
+                        alpha = shown
+                        translationY = (1f - shown) * 40.dp.toPx()
+                    }
+                    .clip(shape)
+                    // Black like the island, with a soft glow of the album's colour spilling in from the top left.
+                    .drawBehind {
+                        drawRect(Color.Black)
+                        drawRect(
+                            Brush.radialGradient(
+                                0f to glowColor.copy(alpha = 0.80f),
+                                0.55f to glowColor.copy(alpha = 0.22f),
+                                1f to Color.Transparent,
+                                center = Offset(size.width * 0.12f, 0f),
+                                radius = size.width * 1.05f,
+                            ),
+                        )
+                    }
+                    .border(1.dp + (1.5f * held).dp, Color.White.copy(alpha = 0.10f + 0.40f * held), shape)
+                    // Swipe down to shrink, swipe up to open it again.
+                    .pointerInput(Unit) {
+                        detectVerticalDragGestures(
+                            onDragStart = { drag = 0f },
+                            onDragEnd = {
+                                if (drag > 40f) setMinimized(true) else if (drag < -40f) setMinimized(false)
+                            },
+                        ) { _, dy -> drag += dy }
+                    },
+            ) {
+                // Each version keeps its own full size and is simply revealed or cut off by the shrinking window.
+                // The old content fades out quickly while the window moves, then the new one fades in.
+                // It fills the whole card, and does not animate its own size: otherwise it starts small in the top left
+                // corner of the growing window and the content seems to fly in from there.
+                androidx.compose.animation.AnimatedContent(
+                    minimized,
+                    modifier = Modifier.fillMaxSize(),
+                    transitionSpec = {
+                        (fadeIn(tween(170, delayMillis = 110)) togetherWith fadeOut(tween(110)))
+                            .using(SizeTransform(clip = false) { _, _ -> snap() })
+                    },
+                    contentAlignment = Alignment.Center,
+                    label = "lock content",
+                ) { small ->
+                    if (small) {
+                        Box(Modifier.requiredSize(IslandBus.LOCK_MIN_W_DP.dp, IslandBus.LOCK_MIN_H_DP.dp)) {
+                            LockMusicMini { setMinimized(false) }
+                        }
+                    } else {
+                        Box(Modifier.requiredSize(IslandBus.lockFullWidthDp.dp, IslandBus.LOCK_BIG_H_DP.dp)) {
+                            LockMusicCard { setMinimized(true) }
+                        }
+                    }
+                }
+            }
         }
     }
-    val want = locked && eligible && IslandBus.lockPlayer && IslandBus.mediaPackage.isNotEmpty() && IslandBus.mediaTitle.isNotEmpty()
-    // Slides in gently, but leaves almost at once when you unlock.
-    val shown by animateFloatAsState(if (want) 1f else 0f, tween(if (want) 300 else 90), label = "lock player")
-    LaunchedEffect(want) { onTouchable(want) }
-    val glass = RoundedCornerShape(28.dp)
-    if (shown > 0.01f) {
-        Box(
-            Modifier.fillMaxSize()
-                .graphicsLayer {
-                    alpha = shown
-                    translationY = (1f - shown) * 40.dp.toPx()
-                }
-                // Like the home screen's widgets: smoky grey glass, a touch lighter at the top, with a thin pale rim.
-                .clip(glass)
-                .background(Brush.verticalGradient(listOf(Color(0xA3585D64), Color(0xA3343840))))
-                .border(
-                    1.6.dp,
-                    Brush.verticalGradient(listOf(Color(0xCCD6DADF), Color(0x80B8BDC3))),
-                    glass,
-                ),
-        ) { LockMusicCard() }
+}
+
+/**
+ * Faint dotted guide lines, drawn only while the lock screen player is being moved: one down the middle of the screen
+ * and one where its bottom edge sits at its usual height. A line brightens while the player clings to it.
+ */
+@Composable
+fun LockGuides(homeYDp: Float) {
+    val show by animateFloatAsState(if (IslandBus.lockDragging) 1f else 0f, tween(180), label = "guides")
+    val nearX by animateFloatAsState(if (IslandBus.lockSnapX) 1f else 0f, tween(120), label = "guide x")
+    val nearY by animateFloatAsState(if (IslandBus.lockSnapY) 1f else 0f, tween(120), label = "guide y")
+    // The horizontal line runs through the middle of the player, whether it is big or small.
+    val half by animateFloatAsState(
+        (if (IslandBus.lockMinimized) IslandBus.LOCK_MIN_H_DP else IslandBus.LOCK_BIG_H_DP) / 2f, tween(300), label = "guide half",
+    )
+    if (show < 0.01f) return
+    androidx.compose.foundation.Canvas(Modifier.fillMaxSize()) {
+        val dash = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(7.dp.toPx(), 9.dp.toPx()))
+        val x = size.width / 2f
+        val y = size.height - (homeYDp + half).dp.toPx()
+        drawLine(
+            Color.White.copy(alpha = (0.22f + 0.55f * nearX) * show), Offset(x, 0f), Offset(x, size.height),
+            strokeWidth = (1.5f + nearX).dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round, pathEffect = dash,
+        )
+        drawLine(
+            Color.White.copy(alpha = (0.22f + 0.55f * nearY) * show), Offset(0f, y), Offset(size.width, y),
+            strokeWidth = (1.5f + nearY).dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round, pathEffect = dash,
+        )
     }
 }
 

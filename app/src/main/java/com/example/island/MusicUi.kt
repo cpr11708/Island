@@ -34,6 +34,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -48,6 +49,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
@@ -223,7 +225,7 @@ internal fun Equalizer(active: Boolean, color: Color = IslandBus.mediaAccent) {
  * with the times underneath, and big white transport buttons.
  */
 @Composable
-internal fun LockMusicCard() {
+internal fun LockMusicCard(onMinimize: () -> Unit = {}) {
     var posMs by remember { mutableLongStateOf(0L) }
     var dragFraction by remember { mutableStateOf<Float?>(null) }
     LaunchedEffect(IslandBus.mediaPosBase, IslandBus.mediaPosTime, IslandBus.mediaPlaying, IslandBus.mediaDuration) {
@@ -248,66 +250,172 @@ internal fun LockMusicCard() {
         IslandBus.mediaPosTime = SystemClock.elapsedRealtime()
     }
 
-    Column(Modifier.fillMaxSize().padding(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 16.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Art(Modifier.size(60.dp), 10.dp)
-            Spacer(Modifier.width(14.dp))
+    Box(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize().padding(start = 22.dp, end = 22.dp, top = 16.dp, bottom = 10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Art(
+                    Modifier.size(52.dp).clip(RoundedCornerShape(11.dp)).clickable(
+                        interactionSource = remember { MutableInteractionSource() }, indication = null,
+                    ) { IslandBus.openMusicApp() },
+                    11.dp,
+                )
+                Spacer(Modifier.width(13.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        IslandBus.mediaTitle.ifEmpty { "Not playing" },
+                        color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.SemiBold,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(IslandBus.mediaArtist, color = soft, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                Spacer(Modifier.width(10.dp))
+                Equalizer(IslandBus.mediaPlaying, Color.White)
+            }
+            Spacer(Modifier.height(4.dp))
+            // The times sit either side of the bar (the touch area is taller than the drawn bar).
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(clock(shownMs), color = soft, fontSize = 12.sp, modifier = Modifier.widthIn(min = 34.dp))
+                Spacer(Modifier.width(8.dp))
+                Box(
+                    Modifier.weight(1f).height(26.dp)
+                        .pointerInput(duration) { detectTapGestures { offset -> seekTo(offset.x / size.width) } }
+                        .pointerInput(duration) {
+                            detectHorizontalDragGestures(
+                                onDragStart = { offset -> dragFraction = (offset.x / size.width).coerceIn(0f, 1f) },
+                                onDragEnd = {
+                                    dragFraction?.let { seekTo(it) }
+                                    dragFraction = null
+                                },
+                                onDragCancel = { dragFraction = null },
+                            ) { change, _ ->
+                                change.consume()
+                                dragFraction = (change.position.x / size.width).coerceIn(0f, 1f)
+                            }
+                        },
+                    contentAlignment = Alignment.CenterStart,
+                ) {
+                    // Like the iPhone's lock screen: the bar rests greyed out, and lights up white while you touch it.
+                    val touched = dragFraction != null
+                    val barHeight by animateDpAsState(if (touched) 9.dp else 5.dp, label = "lock bar")
+                    val lit by animateFloatAsState(if (touched) 1f else 0f, tween(200), label = "lock bar lit")
+                    Box(
+                        Modifier.fillMaxWidth().height(barHeight).clip(RoundedCornerShape(5.dp))
+                            .background(Color.White.copy(alpha = 0.16f + 0.14f * lit)),
+                    ) {
+                        Box(Modifier.fillMaxHeight().fillMaxWidth(fraction).background(Color.White.copy(alpha = 0.5f + 0.45f * lit)))
+                    }
+                }
+                Spacer(Modifier.width(8.dp))
+                Text("-" + clock(duration - shownMs), color = soft, fontSize = 12.sp, textAlign = TextAlign.End, modifier = Modifier.widthIn(min = 38.dp))
+            }
+            Row(
+                Modifier.fillMaxWidth().weight(1f).padding(horizontal = 36.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Control(Kind.Prev, 30.dp) { IslandBus.mediaPrev() }
+                Control(if (IslandBus.mediaPlaying) Kind.Pause else Kind.Play, 38.dp) { IslandBus.mediaPlayPause() }
+                Control(Kind.Next, 30.dp) { IslandBus.mediaNext() }
+            }
+        }
+        // A small handle at the top: tap it, or swipe the player down, to shrink it.
+        Box(
+            Modifier.align(Alignment.TopCenter).size(84.dp, 22.dp).clickable(
+                interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onMinimize,
+            ),
+            contentAlignment = Alignment.TopCenter,
+        ) {
+            Box(Modifier.padding(top = 6.dp).size(36.dp, 4.dp).clip(RoundedCornerShape(2.dp)).background(Color.White.copy(alpha = 0.32f)))
+        }
+    }
+}
+
+/** The shrunk lock screen player: a small pill with the song, a progress ring round the art, and play/pause. */
+@Composable
+internal fun LockMusicMini(onExpand: () -> Unit) {
+    var fraction by remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(IslandBus.mediaPosBase, IslandBus.mediaPosTime, IslandBus.mediaPlaying, IslandBus.mediaDuration) {
+        while (true) {
+            val d = IslandBus.mediaDuration
+            val moved = if (IslandBus.mediaPlaying)
+                ((SystemClock.elapsedRealtime() - IslandBus.mediaPosTime) * IslandBus.mediaSpeed).toLong()
+            else 0L
+            fraction = if (d > 0) ((IslandBus.mediaPosBase + moved).toFloat() / d).coerceIn(0f, 1f) else 0f
+            delay(250)
+        }
+    }
+    val soft = Color.White.copy(alpha = 0.6f)
+    // Tap the song to open the full player again.
+    Row(
+        Modifier.fillMaxSize().padding(start = 9.dp, end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Row(
+            Modifier.weight(1f).fillMaxHeight().clickable(
+                interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onExpand,
+            ),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // The album art with the song's progress drawn as a ring around it.
+            Box(Modifier.size(46.dp), contentAlignment = Alignment.Center) {
+                Art(
+                    Modifier.size(36.dp).clip(RoundedCornerShape(18.dp)).clickable(
+                        interactionSource = remember { MutableInteractionSource() }, indication = null,
+                    ) { IslandBus.openMusicApp() },
+                    18.dp,
+                )
+                Canvas(Modifier.fillMaxSize()) {
+                    val stroke = 2.6.dp.toPx()
+                    val inset = stroke / 2f
+                    val arcSize = Size(size.width - stroke, size.height - stroke)
+                    drawArc(
+                        Color.White.copy(alpha = 0.2f), 0f, 360f, false,
+                        Offset(inset, inset), arcSize, style = androidx.compose.ui.graphics.drawscope.Stroke(stroke),
+                    )
+                    drawArc(
+                        Color.White.copy(alpha = 0.9f), -90f, 360f * fraction, false,
+                        Offset(inset, inset), arcSize,
+                        style = androidx.compose.ui.graphics.drawscope.Stroke(stroke, cap = androidx.compose.ui.graphics.StrokeCap.Round),
+                    )
+                }
+            }
+            Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
                 Text(
                     IslandBus.mediaTitle.ifEmpty { "Not playing" },
-                    color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.SemiBold,
+                    color = Color.White, fontSize = 14.5.sp, fontWeight = FontWeight.SemiBold,
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
-                Text(IslandBus.mediaArtist, color = soft, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-            Spacer(Modifier.width(10.dp))
-            Equalizer(IslandBus.mediaPlaying, Color.White)
-        }
-        Spacer(Modifier.height(10.dp))
-        // The bar, with the times under it (the touch area is taller than the drawn bar).
-        Box(
-            Modifier.fillMaxWidth().height(22.dp)
-                .pointerInput(duration) { detectTapGestures { offset -> seekTo(offset.x / size.width) } }
-                .pointerInput(duration) {
-                    detectHorizontalDragGestures(
-                        onDragStart = { offset -> dragFraction = (offset.x / size.width).coerceIn(0f, 1f) },
-                        onDragEnd = {
-                            dragFraction?.let { seekTo(it) }
-                            dragFraction = null
-                        },
-                        onDragCancel = { dragFraction = null },
-                    ) { change, _ ->
-                        change.consume()
-                        dragFraction = (change.position.x / size.width).coerceIn(0f, 1f)
-                    }
-                },
-            contentAlignment = Alignment.CenterStart,
-        ) {
-            // Like the iPhone's lock screen: the bar rests greyed out, and lights up white while you touch it.
-            val touched = dragFraction != null
-            val barHeight by animateDpAsState(if (touched) 9.dp else 5.dp, label = "lock bar")
-            val lit by animateFloatAsState(if (touched) 1f else 0f, tween(200), label = "lock bar lit")
-            Box(
-                Modifier.fillMaxWidth().height(barHeight).clip(RoundedCornerShape(5.dp))
-                    .background(Color.White.copy(alpha = 0.16f + 0.14f * lit)),
-            ) {
-                Box(Modifier.fillMaxHeight().fillMaxWidth(fraction).background(Color.White.copy(alpha = 0.5f + 0.45f * lit)))
+                Text(IslandBus.mediaArtist, color = soft, fontSize = 12.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(clock(shownMs), color = soft, fontSize = 12.sp)
-            Text("-" + clock(duration - shownMs), color = soft, fontSize = 12.sp)
-        }
-        Row(
-            Modifier.fillMaxWidth().weight(1f).padding(horizontal = 36.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Control(Kind.Prev, 32.dp) { IslandBus.mediaPrev() }
-            Control(if (IslandBus.mediaPlaying) Kind.Pause else Kind.Play, 40.dp) { IslandBus.mediaPlayPause() }
-            Control(Kind.Next, 32.dp) { IslandBus.mediaNext() }
-        }
+        Control(if (IslandBus.mediaPlaying) Kind.Pause else Kind.Play, 22.dp) { IslandBus.mediaPlayPause() }
     }
+}
+
+/** The main colour of the album art (colourful, bright parts count most): used for the lock screen player's glow. */
+internal fun artGlowColor(art: androidx.compose.ui.graphics.ImageBitmap?): Color {
+    val fallback = Color(0xFF3A3A44)
+    if (art == null) return fallback
+    return runCatching {
+        val src = art.asAndroidBitmap().copy(android.graphics.Bitmap.Config.ARGB_8888, false)
+        val small = android.graphics.Bitmap.createScaledBitmap(src, 16, 16, true)
+        val hsv = FloatArray(3)
+        var r = 0.0
+        var g = 0.0
+        var b = 0.0
+        var total = 0.0
+        for (y in 0 until 16) for (x in 0 until 16) {
+            val p = small.getPixel(x, y)
+            android.graphics.Color.colorToHSV(p, hsv)
+            val w = (hsv[1] * hsv[2]).toDouble() + 0.02
+            r += android.graphics.Color.red(p) * w
+            g += android.graphics.Color.green(p) * w
+            b += android.graphics.Color.blue(p) * w
+            total += w
+        }
+        Color((r / total).toInt().coerceIn(0, 255), (g / total).toInt().coerceIn(0, 255), (b / total).toInt().coerceIn(0, 255))
+    }.getOrDefault(fallback)
 }
 
 private enum class Kind { Play, Pause, Next, Prev }

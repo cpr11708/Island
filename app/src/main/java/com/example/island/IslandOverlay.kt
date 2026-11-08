@@ -61,6 +61,7 @@ class IslandOverlay(private val context: Context, private val windowType: Int) {
     private var padView: View? = null
     private var padParams: WindowManager.LayoutParams? = null
     private var lockView: View? = null
+    private var guidesView: View? = null
     private var lockParams: WindowManager.LayoutParams? = null
     private var restoreView: View? = null
     private var restoreParams: WindowManager.LayoutParams? = null
@@ -124,22 +125,38 @@ class IslandOverlay(private val context: Context, private val windowType: Int) {
         }
 
         val o = Owner().also { it.create() }
+        IslandBus.lockFullWidthDp = screenW / density - 56f
         val pad = root(o) { IslandTouchPad() }
         val restore = root(o) { RestorePad() }
-        val lockPlayer = root(o) { LockPlayerRoot { on -> onLockPlayerTouchable(on) } }
+        val guides = root(o) { LockGuides(HOME_Y_DP) }
+        // Full screen, never touchable: it only draws the guide lines while the lock screen player is moved.
+        val guidesLp = WindowManager.LayoutParams(
+            screenW.toInt(),
+            windowManager.currentWindowMetrics.bounds.height(),
+            windowType,
+            BASE_FLAGS or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+            PixelFormat.TRANSLUCENT,
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = 0
+            y = 0
+            title = "Island guides"
+        }
+        val lockPlayer = lockRoot(o) { LockPlayerRoot { on, small -> onLockPlayerTouchable(on, small) } }
         // The lock screen player: across the screen, near the bottom (above the lock screen's own shortcuts).
         val lockLp = WindowManager.LayoutParams(
             (screenW - 56 * density).toInt(),
-            (176 * density).toInt(),
+            (160 * density).toInt(),
             windowType,
             BASE_FLAGS or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
             x = 0
-            y = (176 * density).toInt()
+            y = (HOME_Y_DP * density).toInt()
             title = "Island lock player"
         }
+        applyLockPosition(lockLp, false)
         val main = root(o) {
             IslandRoot(
                 hole = hole,
@@ -157,6 +174,8 @@ class IslandOverlay(private val context: Context, private val windowType: Int) {
         // The pad goes in first, so the main window is above it.
         windowManager.addView(pad, padLp)
         windowManager.addView(restore, restoreLp)
+        windowManager.addView(guides, guidesLp)
+        guidesView = guides
         windowManager.addView(lockPlayer, lockLp)
         windowManager.addView(main, mainLp)
         owner = o
@@ -196,6 +215,149 @@ class IslandOverlay(private val context: Context, private val windowType: Int) {
             )
         }
 
+    // ------------------------------------------------------------------------------------------
+    // The lock screen player can be held and moved. Its position is saved (in dp, from the middle of the screen
+    // and from the bottom) and used for both the big and the small player.
+    // ------------------------------------------------------------------------------------------
+
+    private val prefs get() = context.getSharedPreferences("island", Context.MODE_PRIVATE)
+    private val screenSize get() = windowManager.currentWindowMetrics.bounds
+
+    /** Sets the window size for the big or small player and puts it where it was last left. */
+    private fun applyLockPosition(lp: WindowManager.LayoutParams, small: Boolean) {
+        val d = context.resources.displayMetrics.density
+        lp.width = if (small) (IslandBus.LOCK_MIN_W_DP * d).toInt() else (screenSize.width() - 56 * d).toInt()
+        lp.height = ((if (small) IslandBus.LOCK_MIN_H_DP else IslandBus.LOCK_BIG_H_DP) * d).toInt()
+        lp.x = (prefs.getFloat("lock_x_dp", 0f) * d).toInt()
+        lp.y = (prefs.getFloat("lock_y_dp", HOME_Y_DP) * d).toInt()
+        clampLock(lp)
+    }
+
+    /** Keeps the window on the screen. */
+    private fun clampLock(lp: WindowManager.LayoutParams) {
+        val half = ((screenSize.width() - lp.width) / 2).coerceAtLeast(0)
+        lp.x = lp.x.coerceIn(-half, half)
+        lp.y = lp.y.coerceIn(0, (screenSize.height() - lp.height).coerceAtLeast(0))
+    }
+
+    private fun moveLock(x: Int, y: Int) {
+        val v = lockView ?: return
+        val lp = lockParams ?: return
+        lp.x = x
+        lp.y = y
+        clampLock(lp)
+        runCatching { windowManager.updateViewLayout(v, lp) }
+    }
+
+    private fun saveLockPosition() {
+        val lp = lockParams ?: return
+        val d = context.resources.displayMetrics.density
+        prefs.edit().putFloat("lock_x_dp", lp.x / d).putFloat("lock_y_dp", lp.y / d).apply()
+    }
+
+    /**
+     * The lock screen player's window. Touch and hold it, then drag, to move it: this is done here, with the finger's
+     * position on the screen (not inside the window, which moves along with the finger), before the player's own
+     * buttons and bar get the touch. A quick tap or a swipe on a button or the bar works as normal.
+     */
+    private fun lockRoot(o: Owner, content: @Composable () -> Unit): View =
+        object : FrameLayout(context) {
+            private var downX = 0f
+            private var downY = 0f
+            private var startX = 0
+            private var startY = 0
+            private var dragging = false
+            private var snappedX = false
+            private var snappedY = false
+            private val slop = android.view.ViewConfiguration.get(context).scaledTouchSlop
+            private val startDrag = Runnable {
+                val lp = lockParams ?: return@Runnable
+                dragging = true
+                snappedX = lp.x == 0
+                snappedY = lp.y == (HOME_Y_DP * context.resources.displayMetrics.density).toInt()
+                startX = lp.x
+                startY = lp.y
+                IslandBus.lockDragging = true
+                performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+            }
+
+            /** Moves the player with the finger, but it clings to the middle of the screen and to its usual height. */
+            private fun dragTo(ev: MotionEvent) {
+                val d = context.resources.displayMetrics.density
+                val range = (SNAP_DP * d).toInt()
+                val home = (HOME_Y_DP * d).toInt()
+                var nx = startX + (ev.rawX - downX).toInt()
+                var ny = startY - (ev.rawY - downY).toInt()
+                val sx = Math.abs(nx) < range
+                val sy = Math.abs(ny - home) < range
+                if (sx) nx = 0
+                if (sy) ny = home
+                // A small tick when it catches.
+                if ((sx && !snappedX) || (sy && !snappedY)) performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
+                snappedX = sx
+                snappedY = sy
+                IslandBus.lockSnapX = sx
+                IslandBus.lockSnapY = sy
+                moveLock(nx, ny)
+            }
+
+            private fun endDrag() {
+                removeCallbacks(startDrag)
+                if (dragging) saveLockPosition()
+                dragging = false
+                IslandBus.lockDragging = false
+                IslandBus.lockSnapX = false
+                IslandBus.lockSnapY = false
+            }
+
+            override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
+                when (ev.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        dragging = false
+                        downX = ev.rawX
+                        downY = ev.rawY
+                        postDelayed(startDrag, 450)
+                        return false
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        if (!dragging && Math.hypot((ev.rawX - downX).toDouble(), (ev.rawY - downY).toDouble()) > slop) {
+                            removeCallbacks(startDrag)
+                        }
+                        if (dragging) {
+                            dragTo(ev)
+                            return true
+                        }
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        val was = dragging
+                        endDrag()
+                        return was
+                    }
+                }
+                return dragging
+            }
+
+            override fun onTouchEvent(ev: MotionEvent): Boolean {
+                if (!dragging) return super.onTouchEvent(ev)
+                when (ev.actionMasked) {
+                    MotionEvent.ACTION_MOVE -> dragTo(ev)
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> endDrag()
+                }
+                return true
+            }
+        }.apply {
+            setViewTreeLifecycleOwner(o)
+            setViewTreeViewModelStoreOwner(o)
+            setViewTreeSavedStateRegistryOwner(o)
+            addView(
+                ComposeView(context).apply { setContent(content) },
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                ),
+            )
+        }
+
     /**
      * Decides which window takes touches. Idle: neither. Compact: the small pad. Open: the large main window.
      * Only flags change, never sizes or positions.
@@ -216,9 +378,139 @@ class IslandOverlay(private val context: Context, private val windowType: Int) {
         }
     }
 
-    private fun onLockPlayerTouchable(on: Boolean) {
+    private var lockSmall: Boolean? = null
+    private var lockAnim: android.animation.ValueAnimator? = null
+
+    /**
+     * The window follows the card's size, a frame at a time, so the empty part around a small player never blocks
+     * touches and nothing is ever drawn in a window of the wrong size.
+     */
+    private fun animateLockSize(lp: WindowManager.LayoutParams, small: Boolean) {
+        val v = lockView ?: return
+        val d = context.resources.displayMetrics.density
+        val fromW = lp.width
+        val fromH = lp.height
+        val toW = if (small) (IslandBus.LOCK_MIN_W_DP * d).toInt() else (screenSize.width() - 56 * d).toInt()
+        val toH = ((if (small) IslandBus.LOCK_MIN_H_DP else IslandBus.LOCK_BIG_H_DP) * d).toInt()
+        val savedX = (prefs.getFloat("lock_x_dp", 0f) * d).toInt()
+        val savedY = (prefs.getFloat("lock_y_dp", HOME_Y_DP) * d).toInt()
+        lockAnim?.cancel()
+        lockAnim = android.animation.ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 420
+            // Starts moving at once and eases to a stop, with no hard edge at either end.
+            interpolator = android.view.animation.PathInterpolator(0.2f, 0f, 0f, 1f)
+            addUpdateListener {
+                val t = it.animatedValue as Float
+                lp.width = (fromW + (toW - fromW) * t).toInt()
+                lp.height = (fromH + (toH - fromH) * t).toInt()
+                lp.x = savedX
+                lp.y = savedY
+                clampLock(lp)
+                runCatching { windowManager.updateViewLayout(v, lp) }
+            }
+            start()
+        }
+    }
+
+    private val lockHideHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val lockHide = Runnable { lockView?.visibility = android.view.View.INVISIBLE }
+
+    /** The player has slid down off the bottom edge because the notification shade is open. */
+    private var lockSlid = false
+    private var lockSlide: android.animation.ValueAnimator? = null
+
+    /** Slides the whole window down past the bottom edge of the screen, or back up to where it lives. */
+    private fun slideLock(out: Boolean) {
+        val v = lockView ?: return
+        val lp = lockParams ?: return
+        val d = context.resources.displayMetrics.density
+        val away = -(lp.height + 8 * d).toInt()
+        val home = (prefs.getFloat("lock_y_dp", HOME_Y_DP) * d).toInt()
+        val from = if (out) lp.y else away
+        val to = if (out) away else home
+        lockSlide?.cancel()
+        lockAnim?.cancel()
+        v.visibility = android.view.View.VISIBLE
+        lockSlide = android.animation.ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = if (out) 230 else 320
+            interpolator = if (out) android.view.animation.AccelerateInterpolator(1.6f)
+            else android.view.animation.PathInterpolator(0.2f, 0f, 0f, 1f)
+            addUpdateListener {
+                val t = it.animatedValue as Float
+                lp.y = (from + (to - from) * t).toInt()
+                runCatching { windowManager.updateViewLayout(v, lp) }
+            }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                var cancelled = false
+                override fun onAnimationCancel(a: android.animation.Animator) { cancelled = true }
+                override fun onAnimationEnd(a: android.animation.Animator) {
+                    if (out && !cancelled) v.visibility = android.view.View.INVISIBLE
+                }
+            })
+            start()
+        }
+    }
+
+    private fun onLockPlayerTouchable(on: Boolean, small: Boolean) {
+        val shade = IslandBus.lockShadeOpen && IslandBus.lockPlayerShowing
+        // The notification shade: the player slides down off the bottom of the screen, and back up when it closes.
+        if (!on && shade) {
+            lockHideHandler.removeCallbacks(lockHide)
+            if (!lockSlid) {
+                lockSlid = true
+                lockParams?.let { lp ->
+                    lp.flags = BASE_FLAGS or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                    lockView?.let { v -> runCatching { windowManager.updateViewLayout(v, lp) } }
+                }
+                slideLock(true)
+            }
+            return
+        }
+        if (on && lockSlid) {
+            lockSlid = false
+            lockHideHandler.removeCallbacks(lockHide)
+            lockView?.let { v ->
+                lockParams?.let { lp ->
+                    lockAnim?.cancel()
+                    applyLockPosition(lp, small)
+                    lockSmall = small
+                    lp.y = -(lp.height + 8 * (context.resources.displayMetrics.density)).toInt()
+                    lp.flags = BASE_FLAGS
+                    runCatching { windowManager.updateViewLayout(v, lp) }
+                }
+            }
+            slideLock(false)
+            return
+        }
+        if (!on && lockSlid) {
+            // Unlocked while it was down: put it back in its place, out of sight.
+            lockSlid = false
+            lockSlide?.cancel()
+            lockView?.let { v ->
+                lockParams?.let { lp ->
+                    applyLockPosition(lp, small)
+                    lp.flags = BASE_FLAGS or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                    runCatching { windowManager.updateViewLayout(v, lp) }
+                }
+                v.visibility = android.view.View.INVISIBLE
+            }
+            return
+        }
+        // Once the player has faded out, the whole window is hidden, so no half-faded picture of it can be left behind
+        // on screen (it was seen faintly over the notification shade and the home screen).
+        lockHideHandler.removeCallbacks(lockHide)
+        if (on) lockView?.visibility = android.view.View.VISIBLE
+        else lockHideHandler.postDelayed(lockHide, 250)
         lockView?.let { v ->
             lockParams?.let { lp ->
+                if (lockSmall == null || !on) {
+                    // Nothing is showing: just set the right size and place.
+                    lockAnim?.cancel()
+                    applyLockPosition(lp, small)
+                } else if (lockSmall != small) {
+                    animateLockSize(lp, small)
+                }
+                lockSmall = small
                 lp.flags = if (on) BASE_FLAGS else BASE_FLAGS or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
                 runCatching { windowManager.updateViewLayout(v, lp) }
             }
@@ -235,8 +527,15 @@ class IslandOverlay(private val context: Context, private val windowType: Int) {
     }
 
     private fun hideIsland() {
+        lockHideHandler.removeCallbacks(lockHide)
+        lockSlide?.cancel()
+        lockSlid = false
+        lockAnim?.cancel()
+        lockSmall = null
         lockView?.let { runCatching { windowManager.removeView(it) } }
         lockView = null
+        guidesView?.let { runCatching { windowManager.removeView(it) } }
+        guidesView = null
         restoreView?.let { runCatching { windowManager.removeView(it) } }
         restoreView = null
         mainView?.let { runCatching { windowManager.removeView(it) } }
@@ -250,6 +549,10 @@ class IslandOverlay(private val context: Context, private val windowType: Int) {
     companion object {
         private const val COMPACT_W = 280
         private const val COMPACT_H = 72
+        /** The lock screen player's usual place: centred, this far (dp) above the bottom of the screen. */
+        private const val HOME_Y_DP = 36f
+        /** How close (dp) to the middle or to its usual height it has to get before it clings there. */
+        private const val SNAP_DP = 22f
         private const val TALL_H = 220
         private const val BASE_FLAGS =
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or

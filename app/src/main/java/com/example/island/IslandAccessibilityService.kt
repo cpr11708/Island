@@ -57,12 +57,75 @@ class IslandAccessibilityService : AccessibilityService() {
             handler.postDelayed(this, 100)
         }
     }
-    private var sameCount = 0
+    /**
+     * For finding out how the notification shade looks to Android on the lock screen: a list of the windows that are
+     * on screen while the phone is locked. Shown under Developer tools in the app.
+     */
+    private val lockWindowHistory = ArrayDeque<String>()
+    private var lastLockWindows = ""
+    private fun describeLockWindows() {
+        val km = getSystemService(android.app.KeyguardManager::class.java)
+        if (!km.isKeyguardLocked) return
+        val now = runCatching {
+            windows.joinToString("\n") { w ->
+                val r = android.graphics.Rect().also { w.getBoundsInScreen(it) }
+                "type=${w.type} layer=${w.layer} focus=${w.isFocused} active=${w.isActive} " +
+                        "title=\"${w.title}\" pkg=${w.root?.packageName} ${r.width()}x${r.height()}"
+            }
+        }.getOrDefault("could not read windows")
+        // Only a change is worth keeping: the last few are shown, newest first (open the shade, then unlock, then look).
+        if (now == lastLockWindows) return
+        lastLockWindows = now
+        val time = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())
+        lockWindowHistory.addFirst("[$time]\n$now")
+        while (lockWindowHistory.size > 8) lockWindowHistory.removeLast()
+        IslandBus.lockWindowsDebug = lockWindowHistory.joinToString("\n---\n")
+    }
+
+    /** Window events from the system while locked (opening the shade may only show up here, not in the window list). */
+    private fun logLockEvent(event: AccessibilityEvent) {
+        val km = getSystemService(android.app.KeyguardManager::class.java)
+        if (!km.isKeyguardLocked) return
+        if (event.packageName?.toString() == packageName) return
+        val kind = if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) "state" else "windows(change=${event.windowChanges})"
+        val time = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())
+        lockWindowHistory.addFirst("[$time] event $kind pkg=${event.packageName} class=${event.className} text=${event.text}")
+        while (lockWindowHistory.size > 8) lockWindowHistory.removeLast()
+        IslandBus.lockWindowsDebug = lockWindowHistory.joinToString("\n---\n")
+    }
+
+    /**
+     * On the lock screen Samsung keeps a small "Samsung Pay" swipe handle window on screen. It goes away while the
+     * notification shade is pulled down and comes back when it closes. So once that window has been seen during this
+     * lock, its absence means the shade is open.
+     */
+    private var spaySeen = false
+    private val shadeWatch = object : Runnable {
+        override fun run() {
+            val km = getSystemService(android.app.KeyguardManager::class.java)
+            val pm = getSystemService(android.os.PowerManager::class.java)
+            if (!km.isKeyguardLocked || !pm.isInteractive) {
+                if (!km.isKeyguardLocked) spaySeen = false
+                if (IslandBus.lockShadeOpen) IslandBus.lockShadeOpen = false
+            } else {
+                val list = runCatching { windows }.getOrNull()
+                if (list != null && list.isNotEmpty()) {
+                    val spay = list.any { w -> runCatching { w.root?.packageName?.toString() }.getOrNull()?.contains("spay") == true }
+                    if (spay) spaySeen = true
+                    val open = spaySeen && !spay
+                    if (open != IslandBus.lockShadeOpen) IslandBus.lockShadeOpen = open
+                }
+            }
+            handler.postDelayed(this, 200)
+        }
+    }
+
     private val poll = object : Runnable {
         override fun run() {
             maybePeek()
             readTimerChip()
             if (IslandBus.timerCmd != null && cmdStart == 0L) handler.post(cmdLoop)
+            describeLockWindows()
             handler.postDelayed(this, 1000)
         }
     }
@@ -76,6 +139,8 @@ class IslandAccessibilityService : AccessibilityService() {
         overlay = IslandOverlay(this, WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY).also { it.start() }
         handler.removeCallbacks(poll)
         handler.post(poll)
+        handler.removeCallbacks(shadeWatch)
+        handler.post(shadeWatch)
         handler.removeCallbacks(cmdWatch)
         handler.post(cmdWatch)
     }
@@ -84,6 +149,7 @@ class IslandAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         val type = event?.eventType ?: return
         if (type != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && type != AccessibilityEvent.TYPE_WINDOWS_CHANGED) return
+        logLockEvent(event)
         // Ask Android which window is really in front. Some phones only report the app launcher or recents in the event.
         val pkg = runCatching { rootInActiveWindow?.packageName?.toString() }.getOrNull()
             ?: event.packageName?.toString() ?: return
@@ -103,6 +169,7 @@ class IslandAccessibilityService : AccessibilityService() {
 
     override fun onUnbind(intent: Intent?): Boolean {
         handler.removeCallbacks(poll)
+        handler.removeCallbacks(shadeWatch)
         handler.removeCallbacks(cmdWatch)
         overlay?.stop()
         overlay = null

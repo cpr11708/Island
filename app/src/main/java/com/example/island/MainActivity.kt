@@ -231,6 +231,13 @@ private fun SetupScreen() {
                 PrefSwitch(context, "Camera and microphone dots", "A green or orange dot beside the camera while one is in use.", "privacy_dots", IslandBus.privacyEnabled) { IslandBus.privacyEnabled = it }
                 PrefSwitch(context, "Recording and hotspot dots", "Red while the screen is recorded, green while the hotspot is on.", "status_pills", IslandBus.statusPills) { IslandBus.statusPills = it }
                 PrefSwitch(context, "Music on the lock screen", "A music player near the bottom while locked and playing.", "lock_player", IslandBus.lockPlayer) { IslandBus.lockPlayer = it }
+                Text(
+                    "Touch and hold the lock screen player, then drag, to move it. Tap the handle at its top, or swipe it down, to shrink it.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp,
+                )
+                TextButton(onClick = {
+                    context.getSharedPreferences("island", Context.MODE_PRIVATE).edit().remove("lock_x_dp").remove("lock_y_dp").apply()
+                }) { Text("Put the player back in its usual place") }
             }
         }
         Text(
@@ -238,6 +245,43 @@ private fun SetupScreen() {
                     "Touch the camera to bring a dismissed one back.",
             color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp,
         )
+
+        // ---- Things that overlap with the island
+        Heading("Avoid doubled-up pop-ups")
+        Card {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    "Some phone features show the same thing the island does. If you see two of something, turn the other one off here.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp,
+                )
+                // Samsung's own screens vary between phones and updates, so each button falls back to a nearby page.
+                fun open(vararg actions: String) {
+                    for (a in actions) {
+                        val ok = runCatching {
+                            context.startActivity(Intent(a).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                        }.isSuccess
+                        if (ok) return
+                    }
+                }
+                TextButton(onClick = { open("com.samsung.android.settings.lockscreen.NOW_BAR", "android.settings.LOCK_SCREEN_SETTINGS", Settings.ACTION_SETTINGS) }) {
+                    Text("Now Bar and lock screen settings")
+                }
+                TextButton(onClick = { open("android.settings.NOTIFICATION_SETTINGS", Settings.ACTION_SETTINGS) }) {
+                    Text("Notification settings (status bar icons, pop-ups)")
+                }
+                TextButton(onClick = { open("android.settings.SOUND_SETTINGS", Settings.ACTION_SETTINGS) }) {
+                    Text("Sound settings (silent and vibrate)")
+                }
+                TextButton(onClick = {
+                    runCatching {
+                        context.startActivity(
+                            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                        )
+                    }
+                }) { Text("Island's App info") }
+            }
+        }
 
         // ---- Developer tools, tucked away
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -306,6 +350,7 @@ private fun DeveloperTools(listenerOn: Boolean) {
                 Text("Maps: ${IslandBus.navDebug}", style = small)
                 Text("Camera in use: ${IslandBus.camActive}, microphone: ${IslandBus.micActive}", style = small)
                 Text("Recording: ${IslandBus.recActive}, hotspot: ${IslandBus.hotspotActive}", style = small)
+                Text("Windows seen while locked:\n${IslandBus.lockWindowsDebug.ifEmpty { "(lock the phone, then open this screen again)" }}", style = small)
                 Text(
                     "App in front: ${IslandBus.foregroundPackage.ifEmpty { "(none seen yet)" }}, music app: ${IslandBus.mediaPackage.ifEmpty { "(none)" }}",
                     style = small,

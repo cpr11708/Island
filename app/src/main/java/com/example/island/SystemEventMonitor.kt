@@ -43,6 +43,14 @@ class SystemEventMonitor(private val context: Context) {
                     val on = intent.getBooleanExtra("state", false)
                     IslandBus.alert("✈️", if (on) "Airplane" else "Airplane off", if (on) Orange else Gray)
                 }
+                Intent.ACTION_SCREEN_OFF -> {
+                    handler.removeCallbacks(clearWake)
+                    IslandBus.wakeSnap = true
+                }
+                Intent.ACTION_SCREEN_ON -> {
+                    handler.removeCallbacks(clearWake)
+                    handler.postDelayed(clearWake, 800)
+                }
                 "android.net.wifi.WIFI_AP_STATE_CHANGED" ->
                     IslandBus.hotspotAp = intent.getIntExtra("wifi_state", 11) == 13 // 13 = hotspot enabled
                 "android.net.conn.TETHER_STATE_CHANGED" ->
@@ -75,6 +83,8 @@ class SystemEventMonitor(private val context: Context) {
             }
         }
     }
+
+    private val clearWake = Runnable { IslandBus.wakeSnap = false }
 
     /** The key of the Bluetooth pop-up that is waiting for a battery level. */
     private var btAlertKey = -1
@@ -121,9 +131,9 @@ class SystemEventMonitor(private val context: Context) {
     }
 
     fun start() {
-        IslandBus.privacyEnabled = context.getSharedPreferences("island", Context.MODE_PRIVATE).getBoolean("privacy_dots", false)
-        IslandBus.lockPlayer = context.getSharedPreferences("island", Context.MODE_PRIVATE).getBoolean("lock_player", true)
-        IslandBus.statusPills = context.getSharedPreferences("island", Context.MODE_PRIVATE).getBoolean("status_pills", true)
+        IslandBus.privacyEnabled = context.getSharedPreferences("island", Context.MODE_PRIVATE).getBoolean("privacy_dots", true)
+        IslandBus.lockPlayer = context.getSharedPreferences("island", Context.MODE_PRIVATE).getBoolean("lock_player", false)
+        IslandBus.statusPills = context.getSharedPreferences("island", Context.MODE_PRIVATE).getBoolean("status_pills", false)
         torchIgnoreUntil = SystemClock.elapsedRealtime() + 1500
         runCatching {
             context.getSystemService(CameraManager::class.java).registerTorchCallback(torchCallback, handler)
@@ -147,6 +157,8 @@ class SystemEventMonitor(private val context: Context) {
             addAction(Intent.ACTION_AIRPLANE_MODE_CHANGED)
             addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
             addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_SCREEN_ON)
             addAction("android.net.wifi.WIFI_AP_STATE_CHANGED")
             addAction("android.net.conn.TETHER_STATE_CHANGED")
             addAction("android.bluetooth.device.action.BATTERY_LEVEL_CHANGED")

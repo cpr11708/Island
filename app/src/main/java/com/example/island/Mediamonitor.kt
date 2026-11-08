@@ -34,10 +34,24 @@ class MediaMonitor(private val context: Context, private val listener: Component
         override fun onSessionDestroyed() = pick(activeSessions())
     }
 
+    // When the screen comes on, look at the music session again, so what is shown is right from the first frame.
+    private val screenReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(c: Context, intent: android.content.Intent) {
+            runCatching { pick(activeSessions()) }
+        }
+    }
+
     fun start() {
         try {
             manager.addOnActiveSessionsChangedListener(sessionsChanged, listener)
             pick(activeSessions())
+            context.registerReceiver(
+                screenReceiver,
+                android.content.IntentFilter().apply {
+                    addAction(android.content.Intent.ACTION_SCREEN_ON)
+                    addAction(android.content.Intent.ACTION_USER_PRESENT)
+                },
+            )
         } catch (e: SecurityException) {
             IslandBus.mediaStatus = "No notification access (SecurityException)"
         }
@@ -57,6 +71,7 @@ class MediaMonitor(private val context: Context, private val listener: Component
         handler.removeCallbacksAndMessages(null)
         hidePending = false
         runCatching { manager.removeOnActiveSessionsChangedListener(sessionsChanged) }
+        runCatching { context.unregisterReceiver(screenReceiver) }
         watched.forEach { it.unregisterCallback(callback) }
         watched = emptyList()
         controller = null
@@ -211,6 +226,6 @@ class MediaMonitor(private val context: Context, private val listener: Component
 
     companion object {
         /** How long music may be paused or stopped before the player goes away. */
-        const val NOT_PLAYING_MS = 10_000L
+        const val NOT_PLAYING_MS = 30_000L
     }
 }
