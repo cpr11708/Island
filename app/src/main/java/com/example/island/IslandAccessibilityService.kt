@@ -100,19 +100,28 @@ class IslandAccessibilityService : AccessibilityService() {
      * lock, its absence means the shade is open.
      */
     private var spaySeen = false
+    private var spayGoneSince = 0L
     private val shadeWatch = object : Runnable {
         override fun run() {
             val km = getSystemService(android.app.KeyguardManager::class.java)
             val pm = getSystemService(android.os.PowerManager::class.java)
             if (!km.isKeyguardLocked || !pm.isInteractive) {
-                if (!km.isKeyguardLocked) spaySeen = false
+                // Screen off, or unlocked: forget everything. When the screen comes on, the lock screen's windows take a
+                // moment to appear, and that must not look like the shade being opened.
+                spaySeen = false
+                spayGoneSince = 0L
                 if (IslandBus.lockShadeOpen) IslandBus.lockShadeOpen = false
             } else {
                 val list = runCatching { windows }.getOrNull()
                 if (list != null && list.isNotEmpty()) {
+                    val now = android.os.SystemClock.elapsedRealtime()
                     val spay = list.any { w -> runCatching { w.root?.packageName?.toString() }.getOrNull()?.contains("spay") == true }
-                    if (spay) spaySeen = true
-                    val open = spaySeen && !spay
+                    if (spay) {
+                        spaySeen = true
+                        spayGoneSince = 0L
+                    } else if (spaySeen && spayGoneSince == 0L) spayGoneSince = now
+                    // The handle has to be gone for a moment before it counts as the shade (not a flicker as the screen wakes).
+                    val open = spaySeen && !spay && spayGoneSince != 0L && now - spayGoneSince > 350
                     if (open != IslandBus.lockShadeOpen) IslandBus.lockShadeOpen = open
                 }
             }

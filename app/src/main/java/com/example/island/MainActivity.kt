@@ -314,9 +314,21 @@ private fun DeveloperTools(listenerOn: Boolean) {
                 Button(onClick = { IslandBus.demoStopwatch() }) { Text("Stopwatch") }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Button(onClick = { IslandBus.alert("🪫", "Low battery", Color(0xFFFF453A), 20) }) { Text("Low battery") }
-                Button(onClick = { IslandBus.alert("🔦", "Flashlight", Color(0xFFFFD60A)) }) { Text("Flashlight") }
-                Button(onClick = { IslandBus.alert("🔕", "Silent", Color(0xFFFF9F0A)) }) { Text("Alert") }
+                Button(onClick = {
+                    IslandBus.torchOn = !IslandBus.torchOn
+                    if (!IslandBus.torchOn) IslandBus.torchDismissed = false
+                    IslandBus.state = if (IslandBus.torchOn) IslandState.TorchOpen else IslandBus.restingState()
+                }) { Text("Flashlight") }
+                Button(onClick = { IslandBus.alert("silent", "Silent", Color(0xFFFF9F0A)) }) { Text("Alert") }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Button(onClick = { IslandBus.showDevice("AirPods Pro", true, 80); IslandBus.expandPopup(1) }) { Text("BT connect") }
+                Button(onClick = { IslandBus.showDevice("AirPods Pro", false); IslandBus.expandPopup(1) }) { Text("BT disconnect") }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Button(onClick = { IslandBus.alert("battery", "Low battery", Color(0xFFFF9F0A), 20); IslandBus.expandPopup(2) }) { Text("Battery 20%") }
+                Button(onClick = { IslandBus.alert("battery", "Low battery", Color(0xFFFF453A), 10); IslandBus.expandPopup(2) }) { Text("Battery 10%") }
+                Button(onClick = { IslandBus.alert("battery", "Charged", Color(0xFF30D158), 100); IslandBus.expandPopup(2) }) { Text("Full") }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Button(onClick = { IslandBus.demoCall() }) { Text("Call") }
@@ -346,10 +358,13 @@ private fun DeveloperTools(listenerOn: Boolean) {
                 Text("Timer notification: ${IslandBus.timerDebug}", style = small)
                 Text("Timer chip: ${IslandBus.timerChipDebug}", style = small)
                 Text("Timer buttons: ${IslandBus.timerCmdDebug}", style = small)
+                Text("Clock notifications: ${IslandBus.clockDebug}", style = small)
                 Text("Last tap: ${IslandBus.tapDebug}", style = small)
+                Text("Last close: ${IslandBus.closeDebug}", style = small)
                 Text("Maps: ${IslandBus.navDebug}", style = small)
                 Text("Camera in use: ${IslandBus.camActive}, microphone: ${IslandBus.micActive}", style = small)
                 Text("Recording: ${IslandBus.recActive}, hotspot: ${IslandBus.hotspotActive}", style = small)
+                if (IslandBus.recDebug.isNotEmpty()) Text("Recording because: ${IslandBus.recDebug}", style = small)
                 Text("Windows seen while locked:\n${IslandBus.lockWindowsDebug.ifEmpty { "(lock the phone, then open this screen again)" }}", style = small)
                 Text(
                     "App in front: ${IslandBus.foregroundPackage.ifEmpty { "(none seen yet)" }}, music app: ${IslandBus.mediaPackage.ifEmpty { "(none)" }}",

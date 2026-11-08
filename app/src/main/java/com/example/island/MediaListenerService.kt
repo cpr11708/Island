@@ -59,6 +59,7 @@ class MediaListenerService : NotificationListenerService() {
         val all = try { activeNotifications } catch (_: SecurityException) { null } ?: return
         var rec = false
         var hot = false
+        var recWhy = ""
         for (sbn in all) {
             val n = sbn.notification
             val ex = n.extras
@@ -66,15 +67,18 @@ class MediaListenerService : NotificationListenerService() {
             val ch = (n.channelId ?: "").lowercase()
             val words = ((ex.getCharSequence(Notification.EXTRA_TITLE) ?: "").toString() + " " +
                     (ex.getCharSequence(Notification.EXTRA_TEXT) ?: "")).lowercase()
-            if ((pkg.contains("smartcapture") && ("record" in words || "record" in ch)) ||
-                (pkg == "com.android.systemui" && ("screenrecord" in ch || "screen_record" in ch)) ||
-                "screen record" in words
-            ) rec = true
+            // Only an ongoing notification counts: a finished recording leaves a normal "saved" one behind.
+            if (sbn.isOngoing && (
+                        (pkg.contains("smartcapture") && ("recording" in words || "recording" in ch)) ||
+                                (pkg == "com.android.systemui" && ("screenrecord" in ch || "screen_record" in ch)) ||
+                                "screen record" in words)
+            ) { rec = true; recWhy = "$pkg ch=$ch: ${words.take(60)}" }
             if ((pkg == "android" || pkg == "com.android.systemui" || pkg.contains("settings") || pkg.contains("wifi") || pkg.contains("tether")) &&
                 ("hotspot" in words || "tethering" in words || "tether" in ch || "hotspot" in ch)
             ) hot = true
         }
         IslandBus.recActive = rec
+        IslandBus.recDebug = if (rec) recWhy else ""
         IslandBus.hotspotNote = hot
     }
 
@@ -198,17 +202,30 @@ class MediaListenerService : NotificationListenerService() {
         val ex = sbn.notification.extras
         val words = ((ex.getCharSequence(Notification.EXTRA_TITLE) ?: "").toString() + " " +
                 (ex.getCharSequence(Notification.EXTRA_TEXT) ?: "")).lowercase()
-        return "stopwatch" in words || "timer" in words || ex.getBoolean("android.chronometerCountDown")
+        // A Clock notification with a running chronometer is a timer or a stopwatch even if its words are unexpected.
+        return "stopwatch" in words || "timer" in words || ex.getBoolean("android.chronometerCountDown") ||
+                ex.getBoolean(Notification.EXTRA_SHOW_CHRONOMETER)
     }
 
     private fun isStopwatch(sbn: StatusBarNotification): Boolean {
         val ex = sbn.notification.extras
-        return "stopwatch" in ((ex.getCharSequence(Notification.EXTRA_TITLE) ?: "").toString() + " " +
+        val words = ((ex.getCharSequence(Notification.EXTRA_TITLE) ?: "").toString() + " " +
                 (ex.getCharSequence(Notification.EXTRA_TEXT) ?: "")).lowercase()
+        if ("stopwatch" in words) return true
+        // A chronometer that counts up (and is not called a timer) is a stopwatch.
+        return ex.getBoolean(Notification.EXTRA_SHOW_CHRONOMETER) && !ex.getBoolean("android.chronometerCountDown") && "timer" !in words
     }
 
     private fun checkTimers() {
         val all = try { activeNotifications } catch (_: SecurityException) { null } ?: return
+        // Everything the Clock app has posted, whatever it says: shown in the app to help when a timer is not recognised.
+        IslandBus.clockDebug = all.filter { it.packageName.contains("deskclock") || it.packageName.contains("clockpackage") }
+            .joinToString("\n") { s ->
+                val e = s.notification.extras
+                "${s.packageName.substringAfterLast('.')}: title=[${e.getCharSequence(Notification.EXTRA_TITLE)}] " +
+                        "text=[${e.getCharSequence(Notification.EXTRA_TEXT)}] chrono=${e.getBoolean(Notification.EXTRA_SHOW_CHRONOMETER)} " +
+                        "countDown=${e.getBoolean("android.chronometerCountDown")} timer=${looksLikeTimer(s)} stopwatch=${isStopwatch(s)}"
+            }.ifEmpty { "no Clock notifications right now" }
         // A real timer wins over a stopwatch when both are running.
         val sbn = all.filter { looksLikeTimer(it) }.minByOrNull { if (isStopwatch(it)) 1 else 0 }
         if (sbn == null) {

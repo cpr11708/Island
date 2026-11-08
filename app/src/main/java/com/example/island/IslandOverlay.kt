@@ -316,7 +316,7 @@ class IslandOverlay(private val context: Context, private val windowType: Int) {
                         dragging = false
                         downX = ev.rawX
                         downY = ev.rawY
-                        postDelayed(startDrag, 450)
+                        postDelayed(startDrag, 380)
                         return false
                     }
                     MotionEvent.ACTION_MOVE -> {

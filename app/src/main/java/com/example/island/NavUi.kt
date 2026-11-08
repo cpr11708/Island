@@ -106,9 +106,10 @@ internal fun NavOpenContent() {
                 modifier = Modifier.weight(1f),
             )
             IslandBus.navActions.take(1).forEach { a ->
+                val navSource = androidx.compose.runtime.remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
                 Box(
-                    Modifier.height(40.dp).clip(CircleShape).background(NavDark)
-                        .clickable { a.intent?.let { IslandBus.sendPI(it) } ?: IslandBus.demoNavPress() }
+                    Modifier.height(40.dp).pressScale(navSource).clip(CircleShape).background(NavDark)
+                        .clickable(interactionSource = navSource, indication = null) { a.intent?.let { IslandBus.sendPI(it) } ?: IslandBus.demoNavPress() }
                         .padding(horizontal = 16.dp),
                     contentAlignment = Alignment.Center,
                 ) {

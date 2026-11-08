@@ -17,6 +17,8 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -104,17 +106,20 @@ val OPEN_CORNER = 40.dp
 val TOUCH_PAD = 14.dp
 
 /** How long to hold a finger on the island before it opens or closes. */
-const val HOLD_MS = 600L
+const val HOLD_MS = 450L
+
+/** How much of its usual press squish the island keeps while a button inside it is pressed (0 = none, 1 = all). */
+const val BUTTON_ISLAND_SHARE = 1f
 
 // ---------------------------------------------------------------------------------------------
 // Shared state between the app screen and the overlay service
 // ---------------------------------------------------------------------------------------------
 
 enum class IslandState {
-    Idle, Charging, ChargingOpen, Timer, TimerOpen, Call, CallOpen, Music, MusicOpen, Nav, NavOpen, Alert;
+    Idle, Charging, ChargingOpen, Timer, TimerOpen, Call, CallOpen, Music, MusicOpen, Nav, NavOpen, Alert, Device, Torch, TorchOpen;
 
     /** Whether the island needs the large overlay window. */
-    fun isTall(): Boolean = this == ChargingOpen || this == TimerOpen || this == MusicOpen || this == CallOpen || this == NavOpen
+    fun isTall(): Boolean = this == ChargingOpen || this == TimerOpen || this == MusicOpen || this == CallOpen || this == NavOpen || this == Device || this == TorchOpen
 
     fun tapped(): IslandState = when (this) {
         Charging -> ChargingOpen
@@ -127,6 +132,8 @@ enum class IslandState {
         MusicOpen -> Music
         Nav -> NavOpen
         NavOpen -> Nav
+        Torch -> TorchOpen
+        TorchOpen -> Torch
         else -> this
     }
 }
@@ -205,6 +212,16 @@ object IslandBus {
     var timerCmdDebug by mutableStateOf("")
     /** What the last tap on a compact pill tried to open, and what happened (shown in the app). */
     var tapDebug by mutableStateOf("")
+    /** Why the island last closed, or that a hold registered (shown in the app, never overwritten by taps). */
+    var closeDebug by mutableStateOf("")
+    private val closeLog = ArrayDeque<String>()
+    /** Keeps the last few reasons, newest first (shown in the app). */
+    fun logClose(msg: String) {
+        val t = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
+        closeLog.addFirst("$t $msg")
+        while (closeLog.size > 5) closeLog.removeLast()
+        closeDebug = closeLog.joinToString("\n")
+    }
     /** Set by the notification listener: presses the timer notification's own button ("pause" or "cancel"). True if one was found and pressed. */
     var timerRemotePress: ((String) -> Boolean)? = null
     /** What the accessibility service saw when it read the timer from the screen. */
@@ -293,11 +310,16 @@ object IslandBus {
     var pressed by mutableStateOf(false)
     /** While split: true if the finger is on the small second pill rather than the main one. */
     var pressedBubble by mutableStateOf(false)
+    /** The finger is on a button inside the island (not on the island itself). */
+    var pressedOnButton by mutableStateOf(false)
 
     /** A short message pill (silent mode, a Bluetooth device...). Shown for a moment, then the island goes back. */
     var alertIcon by mutableStateOf("")
     var alertText by mutableStateOf("")
     var alertColor by mutableStateOf(Color.White)
+    var alertExpand = 0
+    /** What the expanded pop-up shows: 1 = Bluetooth device, 2 = battery. */
+    var expandMode by mutableIntStateOf(1)
     var alertKey by mutableIntStateOf(0)
     /** 0..100 when the pop-up shows a battery (low battery, fully charged, earbuds), otherwise -1. */
     var alertBattery by mutableIntStateOf(-1)
@@ -335,10 +357,12 @@ object IslandBus {
         get() = !restoreStale && (callReal && callDismissedKey == callKey) ||
                 (timerKey.isNotEmpty() && timerDismissedKey == timerKey) ||
                 (navKey.isNotEmpty() && navDismissedKey == navKey) ||
+                (torchOn && torchDismissed) ||
                 (mediaPackage.isNotEmpty() && mediaTitle.isNotEmpty() && (mediaHiddenTitle == mediaTitle || !mediaLive))
 
     /** Brings back everything that was swiped away (and paused music that had timed out). */
     fun restoreDismissed() {
+        torchDismissed = false
         lastPresentMs = android.os.SystemClock.elapsedRealtime()
         restoreStale = false
         callDismissedKey = null
@@ -357,6 +381,20 @@ object IslandBus {
     var micActive by mutableStateOf(false)
     /** Screen recording, and hotspot / tethering (from a broadcast, or from the phone's own notification). */
     var recActive by mutableStateOf(false)
+    var recDebug by mutableStateOf("")
+    /** The flashlight is on: shown as its own blue pill for as long as it stays on (swipe it away to hide it). */
+    var torchOn by mutableStateOf(false)
+    /** Every notification the Clock app has posted (for diagnosing a stopwatch or timer that does not show). */
+    var clockDebug by mutableStateOf("")
+    var torchDismissed by mutableStateOf(false)
+    /** Set by the system monitor: switches the real flashlight off. */
+    var torchSwitch: ((Boolean) -> Unit)? = null
+    fun turnTorchOff() {
+        runCatching { torchSwitch?.invoke(false) }
+        torchOn = false
+        torchDismissed = false
+        state = restingState()
+    }
     var hotspotAp by mutableStateOf(false)
     var hotspotNote by mutableStateOf(false)
     val hotspotActive: Boolean get() = hotspotAp || hotspotNote
@@ -396,22 +434,67 @@ object IslandBus {
         if (state == IslandState.Nav || state == IslandState.NavOpen) state = restingState()
     }
 
+    /** Opens a pop-up's expanded view straight away (used by the demo buttons). 1 = Bluetooth device, 2 = battery. */
+    fun expandPopup(mode: Int) {
+        autoIdle = false
+        expandMode = mode
+        state = IslandState.Device
+        autoIdleMs = 4500L
+        autoIdle = true
+    }
+
     /** Shows a short pop-up. Returns false when something open (a call, an expanded island) is in the way. */
-    fun alert(icon: String, text: String, color: Color, battery: Int = -1): Boolean {
+    fun alert(icon: String, text: String, color: Color, battery: Int = -1, expand: Int = 0): Boolean {
         val s = state
         val ok = s == IslandState.Idle || s == IslandState.Charging || s == IslandState.Music ||
-                s == IslandState.Timer || s == IslandState.Call || s == IslandState.Nav || s == IslandState.Alert
+                s == IslandState.Timer || s == IslandState.Call || s == IslandState.Nav || s == IslandState.Torch || s == IslandState.Alert ||
+                s == IslandState.Device
         if (!ok) return false
         if (s != IslandState.Alert) alertReturn = s
+        logClose("pop-up shown: $text")
         alertIcon = icon
         alertText = text
         alertColor = color
         alertBattery = battery
+        // Touch and hold on a pop-up opens more: 1 = the Bluetooth device, 2 = the battery (any pop-up with a battery).
+        alertExpand = if (expand != 0) expand else if (battery >= 0) 2 else 0
         alertKey++
-        autoIdleMs = 2500L
+        // Pop-ups that open into more stay a little longer, so there is time to touch and hold.
+        autoIdleMs = if (alertExpand != 0) 4000L else 2500L
         autoIdle = true
         state = IslandState.Alert
         return true
+    }
+
+    /** The Bluetooth device pop-up (an expanded island that stays clear of the camera). */
+    var deviceName by mutableStateOf("")
+    var deviceConnected by mutableStateOf(true)
+    var deviceBattery by mutableIntStateOf(-1)
+    var deviceKey by mutableIntStateOf(0)
+
+    /** Shows the Bluetooth device pop-up. Returns false when something open (a call, an expanded island) is in the way. */
+    fun showDevice(name: String, connected: Boolean, battery: Int = -1): Boolean {
+        val s = state
+        val ok = s == IslandState.Idle || s == IslandState.Charging || s == IslandState.Music ||
+                s == IslandState.Timer || s == IslandState.Call || s == IslandState.Nav || s == IslandState.Torch || s == IslandState.Alert ||
+                s == IslandState.Device
+        if (!ok) return false
+        deviceName = name
+        deviceConnected = connected
+        deviceBattery = battery
+        deviceKey++
+        // It starts small, with no device name (long names end up behind the camera). Touch and hold shows the details.
+        if (s == IslandState.Device) state = IslandState.Idle
+        val shown = alert("headphones", if (connected) "Connected" else "Disconnected", if (connected) Color(0xFF30D158) else Color(0xFF8E8E93), -1, expand = 1)
+        // Opens straight into the full view.
+        if (shown) expandPopup(1)
+        return shown
+    }
+
+    /** Earbuds report their battery a moment after connecting: add it to the pop-up if it is still showing. */
+    fun deviceAddBattery(forKey: Int, level: Int) {
+        if ((state != IslandState.Device && state != IslandState.Alert) || deviceKey != forKey || !deviceConnected) return
+        deviceBattery = level
     }
 
     /** The battery level of a Bluetooth device arrives a moment after it connects: add it to its pop-up if still showing. */
@@ -444,6 +527,7 @@ object IslandBus {
         IslandState.Timer -> IslandState.TimerOpen
         IslandState.Music -> IslandState.MusicOpen
         IslandState.Nav -> IslandState.NavOpen
+        IslandState.Torch -> IslandState.TorchOpen
         else -> state
     }
 
@@ -468,6 +552,7 @@ object IslandBus {
             IslandState.Timer -> timerDismissedKey = timerKey
             IslandState.Music -> mediaHiddenTitle = mediaTitle
             IslandState.Nav -> navDismissedKey = navKey
+            IslandState.Torch -> torchDismissed = true
             else -> Unit
         }
         // If the dismissed one was the focused one, the other takes over; otherwise nothing else changes.
@@ -519,12 +604,13 @@ object IslandBus {
         }
     }
 
-    /** Persistent activities that are going, highest priority first: Navigation > Call > Music > Timer. */
+    /** Persistent activities that are going, highest priority first: Navigation > Call > Music > Timer > Flashlight. */
     fun activeList(): List<IslandState> = listOf(
         IslandState.Nav to (navKey.isNotEmpty() && navDismissedKey != navKey),
         IslandState.Call to (callReal && callDismissedKey != callKey),
         IslandState.Music to (mediaLive && mediaTitle.isNotEmpty() && mediaHiddenTitle != mediaTitle),
         IslandState.Timer to (timerKey.isNotEmpty() && timerDismissedKey != timerKey),
+        IslandState.Torch to (torchOn && !torchDismissed),
     ).filter { it.second && !hiddenByApp(it.first) }.map { it.first }
 
     /** What the island rests on once a short pop-up (charging, an alert) is over. */
@@ -540,9 +626,10 @@ object IslandBus {
             IslandState.Timer, IslandState.TimerOpen -> IslandState.Timer
             IslandState.Music, IslandState.MusicOpen -> IslandState.Music
             IslandState.Nav, IslandState.NavOpen -> IslandState.Nav
+            IslandState.Torch, IslandState.TorchOpen -> IslandState.Torch
             else -> return null
         }
-        val order = listOf(IslandState.Nav, IslandState.Call, IslandState.Music, IslandState.Timer)
+        val order = listOf(IslandState.Nav, IslandState.Call, IslandState.Music, IslandState.Timer, IslandState.Torch)
         var list = activeList()
         if (base !in list) list = (list + base).sortedBy { order.indexOf(it) }
         if (list.size < 2) return null
@@ -648,33 +735,66 @@ object IslandBus {
 
     /** Opens a compact island, or closes an open one. */
     fun toggle() {
+        logClose("hold registered (state was $state, expandable=$alertExpand)")
         autoIdle = false
-        state = state.tapped()
+        when {
+            // A pop-up: hold to see more (the Bluetooth device, the battery).
+            state == IslandState.Alert && alertExpand != 0 -> {
+                expandMode = alertExpand
+                state = IslandState.Device
+                autoIdleMs = 4500L
+                autoIdle = true
+            }
+            // Hold again to close it.
+            state == IslandState.Device -> state = restingState()
+            else -> state = state.tapped()
+        }
     }
 
     /** Swiped away. A real call or timer stays hidden for the rest of that call or timer. */
     fun dismiss() {
+        logClose("closed by a swipe (state was $state)")
         if (state == IslandState.Call || state == IslandState.CallOpen) callDismissedKey = callKey
         if (state == IslandState.Timer || state == IslandState.TimerOpen) timerDismissedKey = timerKey
         if (state == IslandState.Music || state == IslandState.MusicOpen) mediaHiddenTitle = mediaTitle
         if (state == IslandState.Nav || state == IslandState.NavOpen) navDismissedKey = navKey
+        if (state == IslandState.Torch || state == IslandState.TorchOpen) torchDismissed = true
         state = IslandState.Idle
     }
 
     /** A touch landed anywhere outside the island: go idle. */
+    private val uiHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    /** When a finger last went down on the island itself. */
+    var lastIslandDownMs = 0L
+
+    /**
+     * Some other window of ours reported a touch "outside" it. When a finger lands on the island, the island's own window
+     * gets the touch while the others (the camera pad, the main window...) are told the touch was outside them, at the
+     * same moment. So this waits a beat: if a finger went down on the island at about that time, it was not outside.
+     */
     fun outsideTouch() {
+        val t = android.os.SystemClock.elapsedRealtime()
+        uiHandler.postDelayed({
+            if (lastIslandDownMs >= t - 150) logClose("ignored an outside signal: the touch was on the island")
+            else outsideTouchNow()
+        }, 70)
+    }
+
+    private fun outsideTouchNow() {
+        logClose("closed by a touch outside the island (state was $state)")
         autoIdle = false
         when (state) {
             IslandState.Idle -> Unit
             // Music and calls stay until you swipe them away. An outside touch only closes the expanded player.
-            IslandState.Music, IslandState.Call, IslandState.Timer, IslandState.Nav -> Unit
+            IslandState.Music, IslandState.Call, IslandState.Timer, IslandState.Nav, IslandState.Torch -> Unit
             IslandState.NavOpen -> state = IslandState.Nav
+            IslandState.TorchOpen -> state = IslandState.Torch
             // An open timer closes to the compact timer, unless it has finished (you need the Stop button).
             IslandState.TimerOpen -> if (timerRemainingMs() > 0 || timerPaused || timerStopwatch) state = IslandState.Timer
             // An open call closes to the compact call, except while it is still ringing (you need the buttons).
             IslandState.CallOpen -> if (!callIncoming) state = IslandState.Call
             IslandState.MusicOpen -> state = IslandState.Music
-            IslandState.Alert -> state = restingState()
+            IslandState.Alert, IslandState.Device -> state = restingState()
             else -> state = IslandState.Idle
         }
     }
@@ -710,9 +830,13 @@ private fun IslandState.dims(hole: Hole): DpSize = when (this) {
     IslandState.TimerOpen -> DpSize(340.dp, 104.dp)
     IslandState.Call -> DpSize(190.dp, COMPACT)
     // As wide as the message needs, with the camera's gap kept clear in the middle (the text lives on the right half).
-    IslandState.Alert -> DpSize((IslandBus.camGap + (IslandBus.alertText.length * 8 + 36).dp * 2).coerceIn(190.dp, 340.dp), COMPACT)
+    IslandState.Alert -> DpSize((IslandBus.camGap + (IslandBus.alertText.length * 7 + 30).dp * 2).coerceIn(172.dp, 320.dp), COMPACT)
     IslandState.Nav -> DpSize(190.dp, COMPACT)
     IslandState.NavOpen -> DpSize(350.dp, 150.dp)
+    // Hugs the content: the camera's gap in the middle plus just enough on each side, not the full width.
+    IslandState.Torch -> DpSize(172.dp, COMPACT)
+    IslandState.TorchOpen -> DpSize(350.dp, 84.dp)
+    IslandState.Device -> DpSize(350.dp, 84.dp)
     IslandState.CallOpen -> DpSize(360.dp, 165.dp)
 }
 
@@ -746,10 +870,12 @@ fun IslandRoot(
         )
     }
     // After an outside touch shrinks the island, give it a moment, then go idle (unless it was touched again).
-    LaunchedEffect(state, IslandBus.autoIdle, IslandBus.alertKey) {
-        if (IslandBus.autoIdle) {
-            if (state == IslandState.Charging || state == IslandState.Timer || state == IslandState.Alert) {
+    // The countdown does not run while a finger is on the island, so a pop-up cannot vanish under a touch and hold.
+    LaunchedEffect(state, IslandBus.autoIdle, IslandBus.alertKey, IslandBus.pressed) {
+        if (IslandBus.autoIdle && !IslandBus.pressed) {
+            if (state == IslandState.Charging || state == IslandState.Timer || state == IslandState.Alert || state == IslandState.Device) {
                 delay(IslandBus.autoIdleMs)
+                IslandBus.logClose("timer ran out (state was $state)")
                 // Short pop-ups hand the island back to the highest-priority persistent activity (or idle).
                 IslandBus.state = IslandBus.restingState()
             }
@@ -843,14 +969,33 @@ fun IslandRoot(
 // ---------------------------------------------------------------------------------------------
 
 /**
- * Hold ~600 ms to open or close the island (it fires while the finger is still down), or swipe up, or in from a side towards the camera, to dismiss it. A
+ * Hold ~450 ms to open or close the island (it fires while the finger is still down), or swipe up, or in from a side towards the camera, to dismiss it. A
  * finger may wobble up to 20 dp during the hold. A quick tap does nothing.
  */
 internal fun Modifier.islandGestures(): Modifier = this.pointerInput(Unit) {
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = false)
+        // A button (or the scrub bar) inside the island already took this touch: only that button reacts, not the island.
         // Which side of the camera was touched, in dp from the camera's centre (the touch area is centred on it).
         val xDp = (down.position.x - size.width / 2f) / density
+        IslandBus.lastIslandDownMs = android.os.SystemClock.elapsedRealtime()
+        if (down.isConsumed) {
+            // On a button: the button does most of the reacting, and the island only a little.
+            IslandBus.pressedBubble = IslandBus.onBubble(xDp)
+            IslandBus.pressedOnButton = true
+            IslandBus.pressed = true
+            try {
+                while (true) {
+                    val event = awaitPointerEvent()
+                    if (event.changes.all { !it.pressed }) break
+                }
+            } finally {
+                IslandBus.pressed = false
+                IslandBus.pressedOnButton = false
+                IslandBus.pressedBubble = false
+            }
+            return@awaitEachGesture
+        }
         IslandBus.pressedBubble = IslandBus.onBubble(xDp)
         IslandBus.pressed = true
         try {
@@ -1090,11 +1235,24 @@ fun IslandTouchPad() {
     Box(Modifier.fillMaxSize().islandGestures())
 }
 
+/** A button's own press reaction: it shrinks a little while a finger is on it, and springs back. */
+@Composable
+internal fun Modifier.pressScale(source: androidx.compose.foundation.interaction.InteractionSource, to: Float = 1f): Modifier {
+    val pressed by source.collectIsPressedAsState()
+    val s by animateFloatAsState(
+        if (pressed) to else 1f,
+        spring(dampingRatio = 0.55f, stiffness = 700f),
+        label = "button press",
+    )
+    return this.graphicsLayer { scaleX = s; scaleY = s }
+}
+
 private fun IslandState.base(): IslandState = when (this) {
     IslandState.Call, IslandState.CallOpen -> IslandState.Call
     IslandState.Timer, IslandState.TimerOpen -> IslandState.Timer
     IslandState.Music, IslandState.MusicOpen -> IslandState.Music
     IslandState.Nav, IslandState.NavOpen -> IslandState.Nav
+    IslandState.Torch, IslandState.TorchOpen -> IslandState.Torch
     else -> this
 }
 
@@ -1300,11 +1458,13 @@ fun Island(
     val pressSpring = spring<Float>(dampingRatio = 0.45f, stiffness = 500f)
     val pressing = IslandBus.pressed && state != IslandState.Idle
     // While split, only the pill being touched squishes.
+    // On a button the island reacts at only BUTTON_ISLAND_SHARE of its usual squish (the button does the rest).
+    val pressedScale = if (IslandBus.pressedOnButton) 1f - 0.07f * BUTTON_ISLAND_SHARE else 0.93f
     val squish by animateFloatAsState(
-        if (pressing && !(splitOn && IslandBus.pressedBubble)) 0.93f else 1f, pressSpring, label = "squish",
+        if (pressing && !(splitOn && IslandBus.pressedBubble)) pressedScale else 1f, pressSpring, label = "squish",
     )
     val squishBubble by animateFloatAsState(
-        if (pressing && splitOn && IslandBus.pressedBubble) 0.93f else 1f, pressSpring, label = "squishBubble",
+        if (pressing && splitOn && IslandBus.pressedBubble) pressedScale else 1f, pressSpring, label = "squishBubble",
     )
     // A coloured glow flashes around an island when it opens, then settles.
     val glow = remember { Animatable(0f) }
@@ -1319,6 +1479,8 @@ fun Island(
         IslandState.Timer, IslandState.TimerOpen -> Color(0xFFFF9F0A)
         IslandState.Nav, IslandState.NavOpen -> Color(0xFF0A84FF)
         IslandState.Call, IslandState.CallOpen, IslandState.Charging, IslandState.ChargingOpen -> Color(0xFF30D158)
+        IslandState.Torch, IslandState.TorchOpen -> Color(0xFF0A84FF)
+        IslandState.Device -> if (IslandBus.deviceConnected) Color(0xFF30D158) else Color(0xFF8E8E93)
         else -> Color.White
     }
 
@@ -1426,6 +1588,9 @@ fun Island(
                             IslandState.Music -> MusicCompact()
                             IslandState.MusicOpen -> MusicOpen()
                             IslandState.Alert -> AlertCompact()
+                            IslandState.Torch -> TorchCompact()
+                            IslandState.TorchOpen -> TorchOpenContent()
+                            IslandState.Device -> if (IslandBus.expandMode == 2) BatteryAlertOpen() else DeviceOpen()
                         }
                     }
                 }
@@ -1501,7 +1666,7 @@ private fun PrivacyDots(cam: Boolean, mic: Boolean, rec: Boolean, hot: Boolean, 
             DotPair(cam, Color(0xFF30D158), mic, Color(0xFFFF9F0A), Modifier.align(Alignment.CenterStart))
         }
         Box(Modifier.width(w2).fillMaxHeight()) {
-            DotPair(rec, Color(0xFFFF453A), hot, Color(0xFF30D158), Modifier.align(Alignment.CenterStart))
+            DotPair(rec, Color(0xFFFF453A), hot, Color(0xFFBF5AF2), Modifier.align(Alignment.CenterStart))
         }
     }
 }
@@ -1574,6 +1739,98 @@ private fun ChargingCompact() {
         BatteryIcon(IslandBus.batteryPercent, Modifier.size(24.dp, 12.dp))
         Text("${IslandBus.batteryPercent}%", color = Green, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
     }
+}
+
+/** The shared look of the wide pop-ups: an icon, a title with a line under it, and one big value; the camera sits in between. */
+@Composable
+internal fun InfoOpen(
+    title: String,
+    subtitle: String,
+    subtitleColor: Color,
+    icon: @Composable () -> Unit,
+    trailing: @Composable () -> Unit,
+) {
+    // Exactly the Charging pop-up's layout.
+    Row(Modifier.fillMaxSize().padding(horizontal = 22.dp), verticalAlignment = Alignment.CenterVertically) {
+        icon()
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+            Text(subtitle, color = subtitleColor, fontSize = 13.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+        }
+        trailing()
+    }
+}
+
+/** The expanded battery pop-up (low battery, fully charged). */
+@Composable
+private fun BatteryAlertOpen() {
+    val tint = IslandBus.alertColor
+    val pct = IslandBus.alertBattery.coerceIn(0, 100)
+    val full = pct >= 100
+    val fill = remember(IslandBus.alertKey) { androidx.compose.animation.core.Animatable(0f) }
+    LaunchedEffect(IslandBus.alertKey) { fill.animateTo(pct.toFloat(), tween(900)) }
+    InfoOpen(
+        title = if (full) "Charging" else IslandBus.alertText,
+        subtitle = if (full) "Fully charged" else "Charge soon",
+        subtitleColor = if (full) Gray else tint,
+        icon = { BatteryIcon(fill.value.toInt(), Modifier.size(34.dp, 16.dp), tint) },
+        trailing = { Text("$pct%", color = tint, fontSize = 24.sp, fontWeight = FontWeight.Bold, maxLines = 1) },
+    )
+}
+
+@Composable
+private fun DeviceOpen() {
+    val up = IslandBus.deviceConnected
+    val tint = if (up) Green else Gray
+    InfoOpen(
+        title = IslandBus.deviceName,
+        subtitle = if (up) "Connected" else "Disconnected",
+        subtitleColor = tint,
+        icon = {
+            androidx.compose.foundation.layout.Box(
+                Modifier.size(34.dp).clip(androidx.compose.foundation.shape.CircleShape).background(tint.copy(alpha = 0.2f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                AlertGlyph("headphones", tint, Modifier.size(20.dp))
+            }
+        },
+        trailing = {
+            if (up && IslandBus.deviceBattery >= 0) {
+                val fill = remember(IslandBus.deviceKey) { androidx.compose.animation.core.Animatable(0f) }
+                LaunchedEffect(IslandBus.deviceBattery, IslandBus.deviceKey) { fill.animateTo(IslandBus.deviceBattery.toFloat(), tween(900)) }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    BatteryIcon(fill.value.toInt(), Modifier.size(26.dp, 13.dp), tint)
+                    Spacer(Modifier.width(6.dp))
+                    Text("${IslandBus.deviceBattery}%", color = tint, fontSize = 20.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                }
+            }
+        },
+    )
+}
+
+/** The flashlight, expanded: a button to switch it off. */
+@Composable
+internal fun TorchOpenContent() {
+    val blue = Color(0xFF0A84FF)
+    val source = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    InfoOpen(
+        title = "Flashlight",
+        subtitle = "On",
+        subtitleColor = blue,
+        icon = { AlertGlyph("flashlight", blue, Modifier.size(26.dp)) },
+        trailing = {
+            androidx.compose.foundation.layout.Box(
+                Modifier.height(40.dp).pressScale(source).clip(androidx.compose.foundation.shape.CircleShape)
+                    .background(blue)
+                    .clickable(interactionSource = source, indication = null) { IslandBus.turnTorchOff() }
+                    .padding(horizontal = 18.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("Turn off", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+            }
+        },
+    )
 }
 
 @Composable

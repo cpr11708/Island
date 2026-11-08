@@ -144,11 +144,12 @@ internal fun CallOpenContent() {
             // microphone switch) or an app that has its own Mute button in its notification.
             val canMute = IslandBus.callMuteIntent != null || IslandBus.isPhoneApp(IslandBus.callPackage) || !IslandBus.callReal
             if (!IslandBus.callIncoming && canMute) {
+                val muteSource = remember { MutableInteractionSource() }
                 Box(
-                    Modifier.weight(1f).height(44.dp).clip(CircleShape)
+                    Modifier.weight(1f).height(44.dp).pressScale(muteSource).clip(CircleShape)
                         .background(if (muted) Color.White else Color(0xFF3A3A3C))
                         .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
+                            interactionSource = muteSource,
                             indication = null,
                         ) {
                             val own = IslandBus.callMuteIntent
@@ -170,11 +171,12 @@ internal fun CallOpenContent() {
                 }
             }
             IslandBus.callActions.forEach { action ->
+                val actionSource = remember { MutableInteractionSource() }
                 Box(
-                    Modifier.weight(1f).height(44.dp).clip(CircleShape)
+                    Modifier.weight(1f).height(44.dp).pressScale(actionSource).clip(CircleShape)
                         .background(if (action.accept) CallGreen else CallRed)
                         .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
+                            interactionSource = actionSource,
                             indication = null,
                         ) {
                             if (action.intent != null) IslandBus.pressCallAction(action) else IslandBus.demoPress(action)

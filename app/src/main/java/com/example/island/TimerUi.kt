@@ -164,7 +164,7 @@ private fun TimerButton(action: CallAction, onPress: (() -> Unit)? = null) {
     }
     if (glyph == Glyph.Text) {
         Box(
-            Modifier.height(48.dp).defaultMinSize(minWidth = 48.dp).clip(CircleShape).background(TDark)
+            Modifier.height(48.dp).defaultMinSize(minWidth = 48.dp).pressScale(click).clip(CircleShape).background(TDark)
                 .clickable(interactionSource = click, indication = null, onClick = onClick)
                 .padding(horizontal = 16.dp),
             contentAlignment = Alignment.Center,
@@ -174,7 +174,7 @@ private fun TimerButton(action: CallAction, onPress: (() -> Unit)? = null) {
         return
     }
     Box(
-        Modifier.size(48.dp).clip(CircleShape).background(TDark)
+        Modifier.size(48.dp).pressScale(click).clip(CircleShape).background(TDark)
             .clickable(interactionSource = click, indication = null, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {

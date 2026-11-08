@@ -27,21 +27,21 @@ class SystemEventMonitor(private val context: Context) {
             if (isInitialStickyBroadcast) return
             when (intent.action) {
                 AudioManager.RINGER_MODE_CHANGED_ACTION -> when (intent.getIntExtra(AudioManager.EXTRA_RINGER_MODE, -1)) {
-                    AudioManager.RINGER_MODE_SILENT -> IslandBus.alert("🔕", "Silent", Orange)
-                    AudioManager.RINGER_MODE_VIBRATE -> IslandBus.alert("📳", "Vibrate", Orange)
-                    AudioManager.RINGER_MODE_NORMAL -> IslandBus.alert("🔔", "Ring", Color.White)
+                    AudioManager.RINGER_MODE_SILENT -> IslandBus.alert("silent", "Silent", Orange)
+                    AudioManager.RINGER_MODE_VIBRATE -> IslandBus.alert("vibrate", "Vibrate", Orange)
+                    AudioManager.RINGER_MODE_NORMAL -> IslandBus.alert("ring", "Ring", Color.White)
                 }
                 NotificationManager.ACTION_INTERRUPTION_FILTER_CHANGED -> {
                     val nm = c.getSystemService(NotificationManager::class.java)
                     if (nm.currentInterruptionFilter == NotificationManager.INTERRUPTION_FILTER_ALL) {
-                        IslandBus.alert("🌙", "Focus off", Gray)
+                        IslandBus.alert("moon", "Focus off", Gray)
                     } else {
-                        IslandBus.alert("🌙", "Do Not Disturb", Purple)
+                        IslandBus.alert("moon", "Do Not Disturb", Purple)
                     }
                 }
                 Intent.ACTION_AIRPLANE_MODE_CHANGED -> {
                     val on = intent.getBooleanExtra("state", false)
-                    IslandBus.alert("✈️", if (on) "Airplane" else "Airplane off", if (on) Orange else Gray)
+                    IslandBus.alert("airplane", if (on) "Airplane" else "Airplane off", if (on) Orange else Gray)
                 }
                 Intent.ACTION_SCREEN_OFF -> {
                     handler.removeCallbacks(clearWake)
@@ -58,7 +58,7 @@ class SystemEventMonitor(private val context: Context) {
                 "android.bluetooth.device.action.BATTERY_LEVEL_CHANGED" -> {
                     // Earbuds report their battery a little after connecting (or when it changes).
                     val level = intent.getIntExtra("android.bluetooth.device.extra.BATTERY_LEVEL", -1)
-                    if (level in 0..100) IslandBus.alertAddBattery(btAlertKey, level)
+                    if (level in 0..100) IslandBus.deviceAddBattery(btAlertKey, level)
                 }
                 BluetoothDevice.ACTION_ACL_CONNECTED -> {
                     val device = if (android.os.Build.VERSION.SDK_INT >= 33) {
@@ -67,19 +67,27 @@ class SystemEventMonitor(private val context: Context) {
                         @Suppress("DEPRECATION") intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
                     }
                     // The name needs the Bluetooth permission. Without it, just say a device connected.
-                    val name = runCatching { device?.name }.getOrNull()?.takeIf { it.isNotBlank() } ?: "Connected"
+                    val name = runCatching { device?.name }.getOrNull()?.takeIf { it.isNotBlank() } ?: "Bluetooth device"
                     btAlertKey = -1
-                    if (IslandBus.alert("🎧", name.take(16), MiniGreenColor)) {
-                        btAlertKey = IslandBus.alertKey
+                    if (IslandBus.showDevice(name, true, btLevel(device).takeIf { it in 0..100 } ?: -1)) {
+                        btAlertKey = IslandBus.deviceKey
                         // The battery level (earbuds, headphones) is not always ready at once: look again a moment later.
                         val key = btAlertKey
                         handler.postDelayed({
                             val level = btLevel(device)
-                            if (level in 0..100) IslandBus.alertAddBattery(key, level)
+                            if (level in 0..100) IslandBus.deviceAddBattery(key, level)
                         }, 1400)
                     }
                 }
-                BluetoothDevice.ACTION_ACL_DISCONNECTED -> IslandBus.alert("🎧", "Disconnected", Gray)
+                BluetoothDevice.ACTION_ACL_DISCONNECTED -> {
+                    val device = if (android.os.Build.VERSION.SDK_INT >= 33) {
+                        intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+                    } else {
+                        @Suppress("DEPRECATION") intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+                    }
+                    val name = runCatching { device?.name }.getOrNull()?.takeIf { it.isNotBlank() } ?: "Bluetooth device"
+                    IslandBus.showDevice(name, false)
+                }
             }
         }
     }
@@ -110,6 +118,7 @@ class SystemEventMonitor(private val context: Context) {
     // The flashlight can make a camera look busy: that is not a photo being taken, so no green dot for it.
     private var torchOn = false
     private var torchIgnoreUntil = 0L
+    private var torchId: String? = null
     private fun updateCam() {
         IslandBus.camActive = busyCameras.isNotEmpty() && !torchOn
     }
@@ -117,10 +126,15 @@ class SystemEventMonitor(private val context: Context) {
         override fun onTorchModeChanged(cameraId: String, enabled: Boolean) {
             val was = torchOn
             torchOn = enabled
+            torchId = cameraId
             updateCam()
-            // Android reports the current state when we start listening: that is not a change.
-            if (enabled && !was && SystemClock.elapsedRealtime() > torchIgnoreUntil) {
-                IslandBus.alert("🔦", "Flashlight", Yellow)
+            // The flashlight is its own blue pill for as long as it is on.
+            IslandBus.torchOn = enabled
+            if (!enabled) IslandBus.torchDismissed = false
+            if (enabled != was) {
+                val st = IslandBus.state
+                if (enabled && (st == IslandState.Idle || st == IslandState.Alert)) IslandBus.state = IslandBus.restingState()
+                if (!enabled && (st == IslandState.Torch || st == IslandState.TorchOpen)) IslandBus.state = IslandBus.restingState()
             }
         }
     }
@@ -135,6 +149,7 @@ class SystemEventMonitor(private val context: Context) {
         IslandBus.lockPlayer = context.getSharedPreferences("island", Context.MODE_PRIVATE).getBoolean("lock_player", false)
         IslandBus.statusPills = context.getSharedPreferences("island", Context.MODE_PRIVATE).getBoolean("status_pills", false)
         torchIgnoreUntil = SystemClock.elapsedRealtime() + 1500
+        IslandBus.torchSwitch = { on -> torchId?.let { id -> context.getSystemService(CameraManager::class.java).setTorchMode(id, on) } }
         runCatching {
             context.getSystemService(CameraManager::class.java).registerTorchCallback(torchCallback, handler)
         }

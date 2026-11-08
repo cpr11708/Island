@@ -422,9 +422,10 @@ private enum class Kind { Play, Pause, Next, Prev }
 
 @Composable
 private fun Control(kind: Kind, glyph: Dp = 28.dp, onClick: () -> Unit) {
+    val source = remember { MutableInteractionSource() }
     Box(
-        Modifier.size(glyph + 20.dp).clickable(
-            interactionSource = remember { MutableInteractionSource() },
+        Modifier.size(glyph + 20.dp).pressScale(source).clickable(
+            interactionSource = source,
             indication = null,
             onClick = onClick,
         ),

@@ -50,9 +50,9 @@ class BatteryMonitor(private val context: Context) {
         lastLevel = pct
         if (prevLevel >= 0 && pct != prevLevel) {
             if (!plugged && prevLevel > 20 && pct <= 20 || !plugged && prevLevel > 10 && pct <= 10) {
-                IslandBus.alert("🪫", "Low battery", RED, pct)
+                if (IslandBus.alert("battery", "Low battery", RED, pct)) IslandBus.expandPopup(2)
             } else if (plugged && prevLevel < 100 && pct >= 100) {
-                IslandBus.alert("🔋", "Fully charged", GREEN, pct)
+                if (IslandBus.alert("battery", "Fully charged", GREEN, pct)) IslandBus.expandPopup(2)
             }
         }
 
@@ -60,7 +60,10 @@ class BatteryMonitor(private val context: Context) {
         lastPlugged = plugged
         if (before == null || before == plugged) return // first reading, or nothing changed about the charger
 
-        if (plugged) {
+        if (plugged && pct >= 100) {
+            // Plugged in while already full: say so, rather than showing a charging pill that has nothing to charge.
+            if (IslandBus.alert("battery", "Fully charged", GREEN, pct)) IslandBus.expandPopup(2)
+        } else if (plugged) {
             if (IslandBus.state == IslandState.Idle) {
                 IslandBus.autoIdleMs = CHARGE_SHOW_MS
                 IslandBus.autoIdle = true
