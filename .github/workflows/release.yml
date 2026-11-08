@@ -56,5 +56,6 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          name: Island ${{ github.ref_name }}
           files: Island.apk
           generate_release_notes: true
