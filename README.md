@@ -6,7 +6,7 @@ The island sits over the camera hole and turns into whatever is happening on the
 ## What it does
 
 - **Music:** now playing with a live waveform*, controls, and seeking. Paused music stays a moment, then goes away.
-- **Phone calls:** the caller, the call time, a waveform, and Answer, Decline, Hang up and Mute buttons.
+- **Phone calls:** the caller, the call time, a waveform, and Answer, Decline, Hang up and Mute buttons. Currently only functional for stock phone app.
 - **Navigation:** Google Maps directions, distance and next turn.
 - **Timers and stopwatch:** a live countdown or count-up, with Pause and Stop.
 - **Two at once:** two activities share the island, one on each side of the camera, in the order Maps, Call, Music, Timer.
