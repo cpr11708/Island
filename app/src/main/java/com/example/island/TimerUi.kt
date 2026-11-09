@@ -69,17 +69,16 @@ internal fun TimerCompact() {
     LaunchedEffect(finished) {
         if (finished && IslandBus.state == IslandState.Timer) IslandBus.state = IslandState.TimerOpen
     }
-    Row(
-        Modifier.fillMaxSize().padding(horizontal = 14.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        TimerIcon(Modifier.size(16.dp))
-        Text(
-            if (IslandBus.timerKnown) timerClock(left) else "Timer",
-            color = TOrange, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
-        )
-    }
+    CamRow(
+        Modifier.fillMaxSize(),
+        left = { TimerIcon(Modifier.size(16.dp)) },
+        right = {
+            Text(
+                if (IslandBus.timerKnown) timerClock(left) else "Timer",
+                color = TOrange, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
+            )
+        },
+    )
 }
 
 /** Expanded: a big orange countdown, and the buttons the Clock app offers (Pause, Stop...). */

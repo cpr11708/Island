@@ -59,6 +59,9 @@ class IslandOverlay(private val context: Context, private val windowType: Int) {
     private var mainView: View? = null
     private var mainParams: WindowManager.LayoutParams? = null
     private var padView: View? = null
+    private var editView: View? = null
+    private var lastHole: Hole? = null
+    private var autoHole: Hole? = null
     private var padParams: WindowManager.LayoutParams? = null
     private var lockView: View? = null
     private var guidesView: View? = null
@@ -68,6 +71,8 @@ class IslandOverlay(private val context: Context, private val windowType: Int) {
 
     /** Builds the island and starts watching the battery. */
     fun start() {
+        IslandBus.rebuildOverlay = { rebuild() }
+        IslandBus.startCameraEdit = { startCameraEdit() }
         showIsland()
         battery.start()
         events.start()
@@ -75,11 +80,29 @@ class IslandOverlay(private val context: Context, private val windowType: Int) {
 
     /** Folding or unfolding changes the screen and its camera, so build the island again for the new screen. */
     fun rebuild() {
+        // Remember where the camera was, so a changed position is glided to instead of jumped to.
+        IslandBus.moveFrom = lastHole?.let {
+            floatArrayOf(it.centerX.value, it.centerY.value, IslandBus.lastIdleD, it.screenW.value)
+        }
+        // Put the new island up first and only then take the old one away, so there is no blink in between.
+        val oldMain = mainView
+        val oldPad = padView
+        val oldOwner = owner
+        mainView = null
+        padView = null
+        owner = null
         hideIsland()
         showIsland()
+        lockHideHandler.postDelayed({
+            oldMain?.let { runCatching { windowManager.removeView(it) } }
+            oldPad?.let { runCatching { windowManager.removeView(it) } }
+            oldOwner?.destroy()
+        }, 90L)
     }
 
     fun stop() {
+        IslandBus.rebuildOverlay = null
+        IslandBus.startCameraEdit = null
         battery.stop()
         events.stop()
         hideIsland()
@@ -93,7 +116,7 @@ class IslandOverlay(private val context: Context, private val windowType: Int) {
         // Turn the cutout into a circle. Some phones report a box that runs from the very top of the screen to the
         // bottom of the camera, so the circle is as wide as the box and sits at the bottom of it.
         val rect = metrics.windowInsets.displayCutout?.boundingRectTop
-        val hole = if (rect != null && !rect.isEmpty) {
+        val hole0 = if (rect != null && !rect.isEmpty) {
             val d = rect.width().toFloat()
             Hole(
                 centerX = (rect.exactCenterX() / density).dp,
@@ -105,6 +128,33 @@ class IslandOverlay(private val context: Context, private val windowType: Int) {
         } else {
             Hole((screenW / 2f / density).dp, 20.dp, 0.dp, real = false, screenW = (screenW / density).dp)
         }
+        // The person can choose where the camera is (a list, or a slider) instead of the phone's own cutout.
+        val camPrefs = context.getSharedPreferences("island", Context.MODE_PRIVATE)
+        val screenWdpAll = screenW / density
+        val chosenX: Float? = when (camPrefs.getString("cam_pos", "auto")) {
+            "left_corner" -> 30f
+            "left" -> screenWdpAll * 0.25f
+            "center" -> screenWdpAll * 0.5f
+            "right" -> screenWdpAll * 0.75f
+            "right_corner" -> screenWdpAll - 30f
+            "custom" -> screenWdpAll * camPrefs.getFloat("cam_x_pct", 50f) / 100f
+            else -> null
+        }
+        val hole1 = if (chosenX == null) hole0 else Hole(
+            centerX = chosenX.dp,
+            centerY = if (hole0.real) hole0.centerY else 20.dp,
+            diameter = if (hole0.real) hole0.diameter else 24.dp,
+            real = true,
+            screenW = hole0.screenW,
+        )
+        // How far down the camera is, if the person set it by hand.
+        val hole = if (camPrefs.getBoolean("cam_y_on", false) && camPrefs.getString("cam_pos", "auto") == "custom") {
+            hole1.copy(centerY = camPrefs.getFloat("cam_y_dp", 20f).dp)
+        } else hole1
+        lastHole = hole
+        autoHole = hole0
+        // The island's height only applies when the position is Custom.
+        IslandBus.compactH = if (camPrefs.getString("cam_pos", "auto") == "custom") camPrefs.getFloat("island_h", 36f) else 36f
         // The main window is as wide as the screen (but no wider than the widest island plus its touch margin).
         val tallWidthDp = (screenW / density).coerceIn(380f, 508f)
         val camXpx = hole.centerX.value * density
@@ -157,15 +207,34 @@ class IslandOverlay(private val context: Context, private val windowType: Int) {
             title = "Island lock player"
         }
         applyLockPosition(lockLp, false)
+        val shiftForMain = (camXpx - ((camXpx - tallWidthDp * density / 2f).coerceIn(
+            minOf(0f, screenW - tallWidthDp * density), maxOf(0f, screenW - tallWidthDp * density),
+        ) + tallWidthDp * density / 2f)) / density
         val main = root(o) {
             IslandRoot(
                 hole = hole,
-                xShift = 0.dp,
+                xShift = shiftForMain.dp,
                 onRestoreWanted = { on -> onRestoreWanted(on) },
             ) { touchable, tall -> onLayoutWanted(touchable, tall) }
         }
-        val padLp = params(COMPACT_W.toFloat(), COMPACT_H, "Island pad")
-        val mainLp = params(tallWidthDp, TALL_H, "Island")
+        // The touch windows follow the camera. Both stay on the screen: near an edge they slide inward, and the
+        // island inside them is placed to match (the main window's xShift, the pad's centre).
+        val camXdp = hole.centerX.value
+        val screenWdp = screenW / density
+        val padLp = params(COMPACT_W.toFloat(), maxOf(COMPACT_H, (hole.centerY.value + 40f).toInt()), "Island pad")
+        var leftReach = minOf(COMPACT_W / 2f, camXdp)
+        val rightReach = minOf(screenWdp - camXdp, COMPACT_W - leftReach).coerceAtLeast(0f)
+        leftReach = minOf(camXdp, COMPACT_W - rightReach)
+        padLp.width = ((leftReach + rightReach) * density).toInt().coerceAtLeast(1)
+        padLp.x = (camXpx - leftReach * density).toInt()
+        IslandBus.padCentre = (rightReach - leftReach) / 2f
+        val mainLp = params(tallWidthDp, maxOf(TALL_H, (hole.centerY.value + 240f).toInt()), "Island")
+        run {
+            val w = mainLp.width.toFloat()
+            val lo = minOf(0f, screenW - w)
+            val hi = maxOf(0f, screenW - w)
+            mainLp.x = (camXpx - w / 2f).coerceIn(lo, hi).toInt()
+        }
         // A small area right over the camera (72 x 44 dp), only touchable while there is something to bring back.
         val restoreLp = params(72f, 44, "Island restore").apply {
             y = (hole.centerY.value * density - 44 * density / 2f).toInt().coerceAtLeast(0)
@@ -526,7 +595,79 @@ class IslandOverlay(private val context: Context, private val windowType: Int) {
         }
     }
 
+    /** Opens the full-screen editor for the camera position (see [CameraEditor]). */
+    private fun startCameraEdit() {
+        if (editView != null) return
+        val o = owner ?: return
+        val hole = lastHole ?: return
+        val density = context.resources.displayMetrics.density
+        val bounds = windowManager.currentWindowMetrics.bounds
+        val screenWdp = bounds.width() / density
+        IslandBus.editingCamera = true
+        val handler = android.os.Handler(android.os.Looper.getMainLooper())
+        val startSize = IslandBus.compactH
+        var closing = false
+        val view = root(o) {
+            CameraEditor(
+                startX = hole.centerX.value,
+                startY = hole.centerY.value.coerceIn(8f, CAM_MAX_Y),
+                startSize = startSize,
+                defaultX = (autoHole ?: hole).centerX.value,
+                defaultY = (autoHole ?: hole).centerY.value,
+                diameter = if (hole.real) hole.diameter.value * IDLE_SCALE else 24f,
+                screenW = screenWdp,
+                onSizeLive = { IslandBus.compactH = it },
+                onSave = { x, y, size ->
+                    if (!closing) {
+                        closing = true
+                        IslandBus.compactH = size
+                        context.getSharedPreferences("island", Context.MODE_PRIVATE).edit()
+                            .putString("cam_pos", "custom")
+                            .putFloat("cam_x_pct", x / screenWdp * 100f)
+                            .putBoolean("cam_y_on", true)
+                            .putFloat("cam_y_dp", y)
+                            .putFloat("island_h", size)
+                            .apply()
+                        IslandBus.camVersion++
+                        // A short pause first, so the button's press animation can finish.
+                        handler.postDelayed({ IslandBus.introNext = true; stopCameraEdit(); rebuild() }, CLOSE_PAUSE_MS)
+                    }
+                },
+                onCancel = {
+                    if (!closing) {
+                        closing = true
+                        IslandBus.compactH = startSize
+                        handler.postDelayed({ IslandBus.introNext = true; stopCameraEdit(); rebuild() }, CLOSE_PAUSE_MS)
+                    }
+                },
+            )
+        }
+        val lp = WindowManager.LayoutParams(
+            bounds.width(), bounds.height(), windowType,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT,
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = 0
+            y = 0
+            layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+            title = "Island camera editor"
+        }
+        windowManager.addView(view, lp)
+        editView = view
+    }
+
+    private fun stopCameraEdit() {
+        editView?.let { runCatching { windowManager.removeView(it) } }
+        editView = null
+        IslandBus.editingCamera = false
+    }
+
     private fun hideIsland() {
+        stopCameraEdit()
         lockHideHandler.removeCallbacks(lockHide)
         lockSlide?.cancel()
         lockSlid = false
@@ -548,12 +689,14 @@ class IslandOverlay(private val context: Context, private val windowType: Int) {
 
     companion object {
         private const val COMPACT_W = 280
+        /** How long the editor stays after Save or Cancel, so the button's press animation can finish. */
+        private const val CLOSE_PAUSE_MS = 400L
         private const val COMPACT_H = 72
         /** The lock screen player's usual place: centred, this far (dp) above the bottom of the screen. */
         private const val HOME_Y_DP = 36f
         /** How close (dp) to the middle or to its usual height it has to get before it clings there. */
         private const val SNAP_DP = 22f
-        private const val TALL_H = 220
+        private const val TALL_H = 260
         private const val BASE_FLAGS =
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or

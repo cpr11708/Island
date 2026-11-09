@@ -91,7 +91,8 @@ import androidx.compose.ui.unit.sp
 // ---------------------------------------------------------------------------------------------
 
 /** Height of the compact island. */
-val COMPACT = 36.dp
+/** How tall the compact island is (the person can change it; 36 dp is the standard). */
+val COMPACT: Dp get() = IslandBus.compactH.dp
 
 /** Idle pill diameter as a fraction of the camera hole. Below 1 keeps it inside the hole. */
 const val IDLE_SCALE = 0.8f
@@ -305,6 +306,31 @@ object IslandBus {
 
     /** Gap the camera leaves between the two halves of an open island, in dp (set by the island). */
     var camGap by mutableStateOf(46.dp)
+    /** Where the middle of the island is, in dp from the camera's centre (not zero when the camera is off to one side). */
+    var pillCentre by androidx.compose.runtime.mutableFloatStateOf(0f)
+    /** Where the middle of the small touch window is, in dp from the camera's centre. */
+    var padCentre = 0f
+    /** Extra width (dp) a compact call island needs once its time has more than four characters ("13:28"). */
+    var callExtra by androidx.compose.runtime.mutableFloatStateOf(0f)
+    /** How far (dp) the camera's status dots reach past the camera's usual gap, and whether that is on its left. */
+    var dotsReach by androidx.compose.runtime.mutableFloatStateOf(0f)
+    var dotsOnLeft by mutableStateOf(false)
+    var compactH by androidx.compose.runtime.mutableFloatStateOf(36f)
+    /** True while the camera position editor is open: the real island hides so only the editor's copy shows. */
+    var editingCamera by mutableStateOf(false)
+    var startCameraEdit: (() -> Unit)? = null
+    /** Goes up whenever the camera position is changed from somewhere other than the settings screen. */
+    var camVersion by androidx.compose.runtime.mutableIntStateOf(0)
+    /** Set just before the island is rebuilt after the position editor: the new island drops in smoothly. */
+    var introNext = false
+    /** Set just before a rebuild: where the old camera was (x, y, idle circle size, screen width, all dp), so the new island glides from there. */
+    var moveFrom: FloatArray? = null
+    /** The idle circle's size the last time the island was drawn (dp). */
+    var lastIdleD = 36f
+    /** Set by the overlay: builds the island again (after the camera position setting changes). */
+    var rebuildOverlay: (() -> Unit)? = null
+    /** Where the middle of the island's touch box is, in dp from the camera's centre. */
+    var mainCentre = 0f
 
     /** True while a finger is on the island: it squishes a little. */
     var pressed by mutableStateOf(false)
@@ -813,14 +839,28 @@ const val IDLE_AFTER_MS = 1500L
  */
 data class Hole(val centerX: Dp, val centerY: Dp, val diameter: Dp, val real: Boolean, val screenW: Dp = 0.dp)
 
-private fun IslandState.dims(hole: Hole): DpSize = when (this) {
+/** The island's size, never wider than the screen (with a little room at each side). */
+private fun IslandState.dims(hole: Hole): DpSize {
+    var d = rawDims(hole)
+    // The camera's dots take room next to the camera: a compact island grows by that much.
+    if (this != IslandState.Idle && !isTall()) d = DpSize(d.width + IslandBus.dotsReach.dp, d.height)
+    return if (hole.screenW.value > 0f && this != IslandState.Idle) DpSize(minOf(d.width, hole.screenW - 16.dp), d.height) else d
+}
+
+private fun IslandState.rawDims(hole: Hole): DpSize = when (this) {
     IslandState.Idle -> {
-        val d = if (hole.real) hole.diameter * IDLE_SCALE else 2.dp
+        // The idle circle also follows the island height setting (36 dp is the standard size).
+        val d = if (hole.real) hole.diameter * IDLE_SCALE * (COMPACT.value / 36f) else 2.dp
         DpSize(d, d)
     }
     IslandState.Charging -> DpSize(190.dp, COMPACT)
     IslandState.Timer -> DpSize(190.dp, COMPACT)
-    IslandState.Music -> DpSize(140.dp, COMPACT)
+    IslandState.Music -> {
+        // With the camera near a screen end both pieces sit on the one roomy side, so hug them instead of leaving a gap.
+        val nearEnd = hole.screenW.value > 0f &&
+                minOf(hole.centerX.value, hole.screenW.value - hole.centerX.value) < 60f
+        DpSize(if (nearEnd) (78.dp + IslandBus.camGap).coerceAtMost(140.dp) else 140.dp, COMPACT)
+    }
     IslandState.MusicOpen -> {
         // Halfway between the old fixed width (340 dp) and almost the full screen width.
         val wide = (hole.screenW - 28.dp).coerceIn(340.dp, 480.dp)
@@ -828,7 +868,7 @@ private fun IslandState.dims(hole: Hole): DpSize = when (this) {
     }
     IslandState.ChargingOpen -> DpSize(350.dp, 84.dp)
     IslandState.TimerOpen -> DpSize(340.dp, 104.dp)
-    IslandState.Call -> DpSize(190.dp, COMPACT)
+    IslandState.Call -> DpSize(190.dp + IslandBus.callExtra.dp, COMPACT)
     // As wide as the message needs, with the camera's gap kept clear in the middle (the text lives on the right half).
     IslandState.Alert -> DpSize((IslandBus.camGap + (IslandBus.alertText.length * 7 + 30).dp * 2).coerceIn(172.dp, 320.dp), COMPACT)
     IslandState.Nav -> DpSize(190.dp, COMPACT)
@@ -972,12 +1012,12 @@ fun IslandRoot(
  * Hold ~450 ms to open or close the island (it fires while the finger is still down), or swipe up, or in from a side towards the camera, to dismiss it. A
  * finger may wobble up to 20 dp during the hold. A quick tap does nothing.
  */
-internal fun Modifier.islandGestures(): Modifier = this.pointerInput(Unit) {
+internal fun Modifier.islandGestures(centre: () -> Float = { 0f }): Modifier = this.pointerInput(Unit) {
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = false)
         // A button (or the scrub bar) inside the island already took this touch: only that button reacts, not the island.
         // Which side of the camera was touched, in dp from the camera's centre (the touch area is centred on it).
-        val xDp = (down.position.x - size.width / 2f) / density
+        val xDp = (down.position.x - size.width / 2f) / density + centre()
         IslandBus.lastIslandDownMs = android.os.SystemClock.elapsedRealtime()
         if (down.isConsumed) {
             // On a button: the button does most of the reacting, and the island only a little.
@@ -1048,6 +1088,46 @@ internal fun Modifier.islandGestures(): Modifier = this.pointerInput(Unit) {
         } finally {
             IslandBus.pressed = false
             IslandBus.pressedBubble = false
+        }
+    }
+}
+
+/**
+ * A row laid out around the camera, wherever it is: [left] goes on the camera's left, [right] on its right, with the
+ * camera's gap kept clear between them. When the camera is too near one end for that, both go on the roomy side.
+ * (With the camera in the middle this is the same as a row with the two at the ends.)
+ */
+@Composable
+internal fun CamRow(
+    modifier: Modifier = Modifier,
+    pad: Dp = 14.dp,
+    gap: Dp = IslandBus.camGap,
+    left: @Composable () -> Unit,
+    right: @Composable () -> Unit,
+) {
+    androidx.compose.foundation.layout.BoxWithConstraints(modifier) {
+        val total = maxWidth
+        val cx = maxWidth / 2 - IslandBus.pillCentre.dp          // the camera, from this row's left edge
+        // The camera's status dots are part of the camera: they take room on one side.
+        val dots = IslandBus.dotsReach.dp
+        val leftAvail = (cx - gap / 2 - (if (IslandBus.dotsOnLeft) dots else 0.dp) - pad).coerceAtLeast(0.dp)
+        val rightAvail = (maxWidth - cx - gap / 2 - (if (IslandBus.dotsOnLeft) 0.dp else dots) - pad).coerceAtLeast(0.dp)
+        val small = minOf(leftAvail, rightAvail)
+        val big = maxOf(leftAvail, rightAvail)
+        when {
+            small >= big * 0.5f -> Row(Modifier.fillMaxSize().padding(start = pad), verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.width(leftAvail), contentAlignment = Alignment.CenterStart) { left() }
+                Spacer(Modifier.width((total - pad * 2 - leftAvail - rightAvail).coerceAtLeast(0.dp)))
+                Box(Modifier.width(rightAvail), contentAlignment = Alignment.CenterEnd) { right() }
+            }
+            rightAvail >= leftAvail -> Row(
+                Modifier.fillMaxSize().padding(start = (cx + gap / 2 + (if (IslandBus.dotsOnLeft) 0.dp else dots)).coerceAtLeast(0.dp), end = pad),
+                horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically,
+            ) { left(); right() }
+            else -> Row(
+                Modifier.fillMaxSize().padding(start = pad, end = (maxWidth - cx + gap / 2 + (if (IslandBus.dotsOnLeft) dots else 0.dp)).coerceAtLeast(0.dp)),
+                horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically,
+            ) { left(); right() }
         }
     }
 }
@@ -1232,7 +1312,7 @@ fun RestorePad() {
 
 @Composable
 fun IslandTouchPad() {
-    Box(Modifier.fillMaxSize().islandGestures())
+    Box(Modifier.fillMaxSize().islandGestures { IslandBus.padCentre })
 }
 
 /** A button's own press reaction: it shrinks a little while a finger is on it, and springs back. */
@@ -1279,55 +1359,24 @@ fun Island(
     onBounds: (Rect) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-    val splitOn = split != null && splitLeft != null && (state == IslandState.Timer || state == IslandState.Music || state == IslandState.Call || state == IslandState.Nav)
     // Split: the main pill hugs the camera (its content on the left, the camera at its right end), and the second
     // activity is a small separate pill on the right. So it reads as two items, not three.
     val camD = if (hole.real) hole.diameter else 24.dp
     IslandBus.camGap = camD + 16.dp
-    val pillW = 88.dp
-    val bubbleW = 74.dp
-    val mainRight = camD / 2 + 6.dp                        // from the camera's centre to the main pill's right edge
-    val leftExt = mainRight + pillW                        // ... to the main pill's left edge
-    val bubbleStart = mainRight + 8.dp                     // ... to the small pill's left edge
-    val rightExt = bubbleStart + bubbleW
-    IslandBus.splitSecondary = if (splitOn) split else null
-    IslandBus.splitPrimary = if (splitOn) splitLeft else null
-    IslandBus.splitBubbleStartDp = bubbleStart.value - 4f
-    IslandBus.splitBubbleEndDp = rightExt.value + 10f
-
-    val dims = state.dims(hole)
-    val compactTop = hole.centerY - COMPACT / 2
-    // Where the main pill wants to be, as its left and right edges (dp from the camera's centre), height and top.
-    val targetLeft = if (splitOn) -leftExt.value else -dims.width.value / 2
-    val targetRight = if (splitOn) mainRight.value else dims.width.value / 2
-    val targetHeight = if (splitOn) COMPACT.value else dims.height.value
-    // Idle sits centred on the hole. Every other state hangs so the hole is at the middle of a compact island.
-    val targetTop = if (state == IslandState.Idle) (hole.centerY - dims.height / 2 + HOLE_NUDGE).value else compactTop.value
-
-    // The feel lives in these two springs. Lower damping = more bounce, higher stiffness = snappier.
-    val spec = spring<Float>(dampingRatio = 0.58f, stiffness = 340f)
-    val widthSpec = spring<Float>(dampingRatio = 0.55f, stiffness = 300f)
-    val left = remember { Animatable(targetLeft) }
-    val right = remember { Animatable(targetRight) }
-    val height = remember { Animatable(targetHeight) }
-    val top = remember { Animatable(targetTop) }
-    val bubbleAlpha = remember { Animatable(0f) }
-    val bubbleLeft = remember { Animatable(bubbleStart.value) }
-    val bubbleRight = remember { Animatable(rightExt.value) }
-    var bubbleKind by remember { mutableStateOf<IslandState?>(null) }
-    var ghostKind by remember { mutableStateOf<IslandState?>(null) }
-    var bubblePhase by remember { mutableStateOf(false) }
-    val phaseScope = rememberCoroutineScope()
-
+    val camX = hole.centerX.value
+    val screenWv = hole.screenW.value
+    // A camera near the right edge: the dots grow out to its left instead.
+    val dotsLeft = screenWv > 0f && screenWv - camX < 70f
     // Camera / microphone dots. They stay a moment after the app stops, so a quick flicker is still readable.
-    var privCam by remember { mutableStateOf(false) }
-    var privMic by remember { mutableStateOf(false) }
-    var privRec by remember { mutableStateOf(false) }
-    var privHot by remember { mutableStateOf(false) }
     val camShow = IslandBus.camActive && IslandBus.privacyEnabled
     val micShow = IslandBus.micActive && IslandBus.privacyEnabled
     val recShow = IslandBus.recActive && IslandBus.statusPills
     val hotShow = IslandBus.hotspotActive && IslandBus.statusPills
+    // They start out the way things are right now, so a rebuilt island has its dots at once (nothing fades or grows in).
+    var privCam by remember { mutableStateOf(camShow) }
+    var privMic by remember { mutableStateOf(micShow) }
+    var privRec by remember { mutableStateOf(recShow) }
+    var privHot by remember { mutableStateOf(hotShow) }
     LaunchedEffect(recShow) { if (recShow) privRec = true else { delay(600); privRec = false } }
     LaunchedEffect(hotShow) { if (hotShow) privHot = true else { delay(600); privHot = false } }
     LaunchedEffect(camShow) {
@@ -1342,13 +1391,169 @@ fun Island(
     // dp the dots pill reaches past the camera's right edge: a second column of dots (recording, hotspot) widens it.
     val privCols = (if (privCam || privMic) 1 else 0) + (if (privRec || privHot) 1 else 0)
     val privExtra by animateFloatAsState(20f + 11f * (privCols - 1).coerceAtLeast(0), tween(250), label = "privacy width")
+    // The dots are part of the camera: everything else is laid out around them (never over or under them).
+    val dotsReach = if (privCam || privMic || privRec || privHot) 20f + 11f * (privCols - 1).coerceAtLeast(0) else 0f
+    IslandBus.dotsReach = dotsReach
+    IslandBus.dotsOnLeft = dotsLeft
+    // A clock that moves on every second: the width of the call time (and of the little pills) follows its length.
+    var tickMs by remember { androidx.compose.runtime.mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) { while (true) { delay(1000); tickMs = System.currentTimeMillis() } }
+    val callChars by remember {
+        androidx.compose.runtime.derivedStateOf {
+            if (IslandBus.callIncoming || IslandBus.callStartMs <= 0L) 4 else miniClock(tickMs - IslandBus.callStartMs).length
+        }
+    }
+    IslandBus.callExtra = (callChars - 4).coerceAtLeast(0) * 17f
+    // The left pill of a split fits what it shows (an icon and a short time) instead of a fixed width.
+    val leftKind = splitLeft ?: state
+    val miniChars by remember(leftKind) {
+        androidx.compose.runtime.derivedStateOf {
+            when (leftKind) {
+                IslandState.Call, IslandState.CallOpen -> callChars
+                IslandState.Timer, IslandState.TimerOpen ->
+                    if (IslandBus.timerKnown) miniClock(IslandBus.timerRemainingMs(tickMs) + (if (IslandBus.timerStopwatch) 0L else 999L)).length else 5
+                else -> 0
+            }
+        }
+    }
+    val pillW = if (miniChars == 0) 52.dp else (33f + miniChars * 7.6f).dp
+    val bubbleW = 74.dp
+    val baseRight = camD / 2 + 6.dp
+    val mainRight = baseRight + (if (dotsLeft) 0f else dotsReach).dp   // from the camera's centre to the main pill's right edge
+    val leftExt = baseRight + pillW + (if (dotsLeft) dotsReach else 0f).dp   // ... to the main pill's left edge
+    val bubbleStart = mainRight + 8.dp                     // ... to the small pill's left edge
+    val rightExt = bubbleStart + bubbleW
+    // Two pills side by side need room on both sides of the camera; near a screen edge only one activity shows.
+    val fitsSplit = screenWv <= 0f || (camX >= leftExt.value + 8f && screenWv - camX >= rightExt.value + 8f)
+    val splitOn = fitsSplit && split != null && splitLeft != null &&
+            (state == IslandState.Timer || state == IslandState.Music || state == IslandState.Call || state == IslandState.Nav)
+    IslandBus.splitSecondary = if (splitOn) split else null
+    IslandBus.splitPrimary = if (splitOn) splitLeft else null
+    IslandBus.splitBubbleStartDp = bubbleStart.value - 4f
+    IslandBus.splitBubbleEndDp = rightExt.value + 10f
+
+    val dims = state.dims(hole)
+    val compactTop = hole.centerY - COMPACT / 2
+    // Where the main pill wants to be, as its left and right edges (dp from the camera's centre), height and top.
+    // A camera away from the middle of the screen: the island slides over so it stays on the screen, still covering the camera.
+    val shift = if (state == IslandState.Idle) 0f else {
+        val w = dims.width.value
+        // Whatever the dots take on one side pushes the island's middle that way (so the room each side keeps its size).
+        val want = if (state.isTall() || splitOn) 0f else if (dotsLeft) -dotsReach / 2 else dotsReach / 2
+        val lim = (w / 2 - (camD.value / 2 + 4f)).coerceAtLeast(0f)
+        if (screenWv <= 0f) want.coerceIn(-lim, lim) else {
+            val low = 8f - camX + w / 2            // the furthest left the middle can go (left edge 8 dp from the screen's edge)
+            val high = (screenWv - 8f - camX) - w / 2
+            val fit = if (low > high) low else want.coerceIn(low, high)
+            fit.coerceIn(-lim, lim)
+        }
+    }
+    val targetLeft = if (splitOn) -leftExt.value else -dims.width.value / 2 + shift
+    val targetRight = if (splitOn) mainRight.value else dims.width.value / 2 + shift
+    val targetHeight = if (splitOn) COMPACT.value else dims.height.value
+    // Idle sits centred on the hole. Every other state hangs so the hole is at the middle of a compact island.
+    val targetTop = if (state == IslandState.Idle) (hole.centerY - dims.height / 2 + HOLE_NUDGE).value else compactTop.value
+
+    // The feel lives in these two springs. Lower damping = more bounce, higher stiffness = snappier.
+    val spec = spring<Float>(dampingRatio = 0.58f, stiffness = 340f)
+    val widthSpec = spring<Float>(dampingRatio = 0.55f, stiffness = 300f)
+    // Right after the position editor closes, the island starts as the idle circle and grows into whatever is going on.
+    val introStart = remember { IslandBus.introNext }
+    val idleStart = IslandState.Idle.dims(hole).width.value
+    IslandBus.lastIdleD = idleStart
+    // After a position change (not a fold, not the editor) the island starts where the camera was and glides over.
+    val moveFrom = remember {
+        IslandBus.moveFrom.also { IslandBus.moveFrom = null }?.takeIf {
+            !introStart && abs(it[3] - hole.screenW.value) < 1f && (abs(it[0] - hole.centerX.value) > 0.5f || abs(it[1] - hole.centerY.value) > 0.5f)
+        }
+    }
+    val glideOnce = remember { booleanArrayOf(true) }
+    val moveDx = if (moveFrom != null) moveFrom[0] - hole.centerX.value else 0f
+    val moveDy = if (moveFrom != null) moveFrom[1] - hole.centerY.value else 0f
+    val left = remember {
+        Animatable(if (introStart) -idleStart / 2 else if (moveFrom != null) (if (state == IslandState.Idle) -moveFrom[2] / 2 else targetLeft) + moveDx else targetLeft)
+    }
+    val right = remember {
+        Animatable(if (introStart) idleStart / 2 else if (moveFrom != null) (if (state == IslandState.Idle) moveFrom[2] / 2 else targetRight) + moveDx else targetRight)
+    }
+    val height = remember {
+        Animatable(if (introStart) idleStart else if (moveFrom != null && state == IslandState.Idle) moveFrom[2] else targetHeight)
+    }
+    val top = remember {
+        Animatable(if (introStart) hole.centerY.value - idleStart / 2 + HOLE_NUDGE.value else if (moveFrom != null) targetTop + moveDy else targetTop)
+    }
+    // While it glides, it is not held over the new camera spot.
+    // (Judged by how far it still is from its spot, not by whether the animation has started, so the very first frame is right too.)
+    val gliding = moveFrom != null &&
+            (abs(left.value - targetLeft) > 0.3f || abs(right.value - targetRight) > 0.3f || abs(top.value - targetTop) > 0.3f)
+    // Which side of the camera the dots pill is on: 0 = right, 1 = left. It slides across (under the island) instead of jumping.
+    val dotsSide = remember {
+        Animatable(
+            if (moveFrom != null) (if (screenWv - moveFrom[0] < 70f) 1f else 0f) else (if (dotsLeft) 1f else 0f),
+        )
+    }
+    LaunchedEffect(dotsLeft) {
+        dotsSide.animateTo(
+            if (dotsLeft) 1f else 0f,
+            tween(480, easing = androidx.compose.animation.core.FastOutSlowInEasing),
+        )
+    }
+    val bubbleAlpha = remember { Animatable(0f) }
+    val bubbleLeft = remember { Animatable(bubbleStart.value) }
+    val bubbleRight = remember { Animatable(rightExt.value) }
+    var bubbleKind by remember { mutableStateOf<IslandState?>(null) }
+    var ghostKind by remember { mutableStateOf<IslandState?>(null) }
+    var bubblePhase by remember { mutableStateOf(false) }
+    val phaseScope = rememberCoroutineScope()
+
     val prev = remember { IslandPrev() }
+    // After the position editor closes, the new island eases in instead of popping up.
+    val intro = remember { Animatable(if (introStart) 0f else 1f) }
+    LaunchedEffect(Unit) {
+        if (introStart) {
+            IslandBus.introNext = false
+            // What is inside the island fades in once it has started to grow.
+            intro.animateTo(1f, tween(260, delayMillis = 160))
+        }
+    }
+    // When a split ends (the other activity went away), the pill's old small content fades out while the full compact
+    // content fades in, once the pill has begun to settle: no jump between the two layouts.
+    var lastSplitLeft by remember { mutableStateOf<IslandState?>(null) }
+    var endGhost by remember { mutableStateOf<IslandState?>(null) }
+    val endAlpha = remember { Animatable(0f) }
+    val contentFade = remember { Animatable(1f) }
+    LaunchedEffect(splitOn, splitLeft, state) {
+        if (splitOn) {
+            lastSplitLeft = splitLeft
+            contentFade.snapTo(1f)
+        } else if (lastSplitLeft != null && !state.isTall()) {
+            endGhost = lastSplitLeft
+            lastSplitLeft = null
+            try {
+                contentFade.snapTo(0f)
+                endAlpha.snapTo(1f)
+                coroutineScope {
+                    launch { endAlpha.animateTo(0f, tween(200)) }
+                    launch { delay(130); contentFade.animateTo(1f, tween(220)) }
+                }
+            } finally {
+                // However this ends (even if something else changes halfway), nothing is left faded out or drawn twice.
+                withContext(NonCancellable) {
+                    endGhost = null
+                    endAlpha.snapTo(0f)
+                    contentFade.snapTo(1f)
+                }
+            }
+        } else if (!splitOn) {
+            lastSplitLeft = null
+        }
+    }
     val splitNow by rememberUpdatedState(split)
     val splitLeftNow by rememberUpdatedState(splitLeft)
 
     // Opening something: the part being opened is the one that grows. If it was the small pill, the island starts
     // from there. The other part simply fades away.
-    LaunchedEffect(state, splitOn, bubblePhase) {
+    LaunchedEffect(state, splitOn, bubblePhase, IslandBus.compactH, dotsReach, IslandBus.callExtra, pillW.value) {
         val open = state.isTall()
         val fromBubble = open && prev.splitOn && prev.secondary == state.base()
         val fromMain = open && prev.splitOn && !fromBubble
@@ -1431,10 +1636,15 @@ fun Island(
                 }
                 launch { bubbleLeft.animateTo(bubbleStart.value, widthSpec) }
                 launch { bubbleRight.animateTo(rightExt.value, widthSpec) }
-                launch { left.animateTo(targetLeft, wSpec) }
-                launch { right.animateTo(targetRight, wSpec) }
-                launch { height.animateTo(targetHeight, hSpec) }
-                launch { top.animateTo(targetTop, spec) }
+                // Gliding to a new camera spot: everything moves together on one smooth curve (no bounce, so what is inside stays calm).
+                val glide = if (moveFrom != null && glideOnce[0]) {
+                    tween<Float>(480, easing = androidx.compose.animation.core.FastOutSlowInEasing)
+                } else null
+                glideOnce[0] = false
+                launch { left.animateTo(targetLeft, glide ?: wSpec) }
+                launch { right.animateTo(targetRight, glide ?: wSpec) }
+                launch { height.animateTo(targetHeight, glide ?: hSpec) }
+                launch { top.animateTo(targetTop, glide ?: spec) }
                 when {
                     splitOn -> launch { bubbleAlpha.animateTo(1f, tween(200)) }
                     fromBubble -> Unit
@@ -1452,7 +1662,7 @@ fun Island(
     }
 
     val visibility by animateFloatAsState(
-        if (state == IslandState.Idle && !hole.real) 0f else 1f,
+        if (IslandBus.editingCamera || (state == IslandState.Idle && !hole.real)) 0f else 1f,
         label = "visibility",
     )
     val pressSpring = spring<Float>(dampingRatio = 0.45f, stiffness = 500f)
@@ -1498,14 +1708,22 @@ fun Island(
     // (Not while the camera pill is left behind: it is the one covering the camera then.)
     val toBubbleNow = splitOn && !state.isTall() &&
             (bubblePhase || (prev.openFromBubble && prev.openBase == split))
-    val cameraCovered = fromBubbleNow || toBubbleNow || ghostKind != null
+    val cameraCovered = fromBubbleNow || toBubbleNow || ghostKind != null || gliding
     val l = if (state == IslandState.Idle || cameraCovered) leftNow else minOf(leftNow, -minHalf)
     val r = if (state == IslandState.Idle || cameraCovered) rightNow else maxOf(rightNow, minHalf)
     val widthDp = (r - l).coerceAtLeast(1f)
     val centre = (l + r) / 2
+    // While gliding to a new camera spot, the content is laid out as if the island were already there (it just rides along).
+    IslandBus.pillCentre = if (gliding) centre - (leftNow - targetLeft) else centre
     val corner = minOf(h / 2, OPEN_CORNER.value).dp
     val privOn = privAnim > 0.01f
-    val ext = maxOf(-l, r, if (bubbleAlpha.value > 0.01f) rightExt.value else 0f, if (privOn) camD.value / 2 + 4f + privExtra else 0f)
+    // The touch box reaches from the island's left end to its right end (the dots pill and the small pill included), so it
+    // can sit off-centre when the camera is not in the middle. Its middle is [boxCentre] dp from the camera.
+    val privReach = if (privOn) camD.value / 2 + 4f + privExtra else 0f
+    val extR = maxOf(r, if (bubbleAlpha.value > 0.01f) rightExt.value else 0f, if (!dotsLeft) privReach else 0f)
+    val extL = maxOf(-l, if (dotsLeft) privReach else 0f)
+    val boxCentre = (extR - extL) / 2f
+    IslandBus.mainCentre = boxCentre
     // Squishing keeps the top edge and the camera covered: it pivots on the camera and the top, and never gets
     // shorter than what is needed to hide the camera.
     val neededH = COMPACT.value / 2 + camD.value / 2 + 2f
@@ -1515,134 +1733,150 @@ fun Island(
     // The touch area is a box TOUCH_PAD bigger than the island on every side. The visible island is drawn inside it.
     Box(
         modifier
-            .offset { IntOffset(xShift.roundToPx(), (top.value.dp - TOUCH_PAD).roundToPx()) }
-            .size((2 * ext).dp + TOUCH_PAD * 2, (if (privOn) maxOf(h, COMPACT.value) else h).dp + TOUCH_PAD * 2)
+            .offset { IntOffset((xShift + boxCentre.dp).roundToPx(), (top.value.dp - TOUCH_PAD).roundToPx()) }
+            .size((extR + extL).dp + TOUCH_PAD * 2, (if (privOn) maxOf(h, COMPACT.value) else h).dp + TOUCH_PAD * 2)
             .onGloballyPositioned { onBounds(it.boundsInRoot()) }
-            .islandGestures(),
+            .islandGestures { IslandBus.mainCentre },
         contentAlignment = Alignment.TopCenter,
     ) {
-        // The camera pill, left behind while the small pill opens.
-        val ghostShown = (if (fromBubbleNow) prev.main else if (toBubbleNow) splitLeft else ghostKind)?.takeIf { it != IslandState.Alert }
-        if (ghostShown != null) {
-            Box(
-                Modifier.padding(top = TOUCH_PAD).offset(x = ((-leftExt + mainRight) / 2).value.dp)
-                    .size(leftExt + mainRight, COMPACT)
-                    .clip(RoundedCornerShape(COMPACT / 2)).background(Color.Black),
-            ) {
-                Box(Modifier.size(pillW, COMPACT).align(Alignment.CenterStart)) { MiniActivity(ghostShown) }
-            }
-        }
-        // The main pill: the whole island when nothing is split.
-        Box(
-            Modifier
-                .padding(top = TOUCH_PAD)
-                .offset(x = centre.dp)
-                .size(widthDp.dp, h.dp)
-                .graphicsLayer {
-                    scaleX = squish
-                    scaleY = maxOf(squish, minScaleY)
-                    transformOrigin = TransformOrigin(pivotX, 0f)
+        // Everything inside is placed in dp from the camera's centre, so this layer is pulled back onto the camera.
+        Box(Modifier.fillMaxSize().offset(x = (-boxCentre).dp), contentAlignment = Alignment.TopCenter) {
+            // The camera pill, left behind while the small pill opens.
+            val ghostShown = (if (fromBubbleNow) prev.main else if (toBubbleNow) splitLeft else ghostKind)?.takeIf { it != IslandState.Alert }
+            if (ghostShown != null) {
+                Box(
+                    Modifier.padding(top = TOUCH_PAD).offset(x = ((-leftExt + mainRight) / 2).value.dp)
+                        .size(leftExt + mainRight, COMPACT)
+                        .clip(RoundedCornerShape(COMPACT / 2)).background(Color.Black),
+                ) {
+                    Box(Modifier.size(pillW, COMPACT).align(Alignment.CenterStart)) { MiniActivity(ghostShown, towardCamera = true) }
                 }
-                .alpha(visibility)
-                .shadow(
-                    (12f * glow.value).dp, RoundedCornerShape(corner), clip = false,
-                    ambientColor = glowColor, spotColor = glowColor,
-                )
-                .clip(RoundedCornerShape(corner))
-                .background(Color.Black)
-                .then(
-                    if (outline && state == IslandState.Idle)
-                        Modifier.border(BorderStroke(1.dp, Color.Red), RoundedCornerShape(corner))
-                    else Modifier,
-                ),
-            contentAlignment = Alignment.Center,
-        ) {
-            if (toBubbleNow) {
-                // The closing island is the small pill's content on its way back into place.
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { MiniActivity(split!!) }
-            } else if (splitOn) {
-                Box(Modifier.size(pillW, COMPACT).align(Alignment.CenterStart)) { MiniActivity(splitLeft!!) }
-            } else {
-                AnimatedContent(
-                    targetState = state,
-                    transitionSpec = {
-                        (fadeIn(tween(durationMillis = 220, delayMillis = 120)) togetherWith
-                                fadeOut(tween(durationMillis = 80)))
-                            .using(SizeTransform(clip = false) { _, _ -> snap() })
-                    },
-                    contentAlignment = Alignment.Center,
-                    label = "content",
-                ) { s ->
-                    val d = s.dims(hole)
-                    Box(Modifier.requiredSize(d.width, d.height)) {
-                        when (s) {
-                            IslandState.Idle -> Unit
-                            IslandState.Charging -> ChargingCompact()
-                            IslandState.ChargingOpen -> ChargingOpen()
-                            IslandState.Timer -> TimerCompact()
-                            IslandState.TimerOpen -> TimerOpenContent()
-                            IslandState.Call -> CallCompact()
-                            IslandState.CallOpen -> CallOpenContent()
-                            IslandState.Nav -> NavCompact()
-                            IslandState.NavOpen -> NavOpenContent()
-                            IslandState.Music -> MusicCompact()
-                            IslandState.MusicOpen -> MusicOpen()
-                            IslandState.Alert -> AlertCompact()
-                            IslandState.Torch -> TorchCompact()
-                            IslandState.TorchOpen -> TorchOpenContent()
-                            IslandState.Device -> if (IslandBus.expandMode == 2) BatteryAlertOpen() else DeviceOpen()
+            }
+            // The main pill: the whole island when nothing is split.
+            Box(
+                Modifier
+                    .padding(top = TOUCH_PAD)
+                    .offset(x = centre.dp)
+                    .size(widthDp.dp, h.dp)
+                    .graphicsLayer {
+                        scaleX = squish
+                        scaleY = maxOf(squish, minScaleY)
+                        transformOrigin = TransformOrigin(pivotX, 0f)
+                    }
+                    .alpha(visibility)
+                    .shadow(
+                        (12f * glow.value).dp, RoundedCornerShape(corner), clip = false,
+                        ambientColor = glowColor, spotColor = glowColor,
+                    )
+                    .clip(RoundedCornerShape(corner))
+                    .background(Color.Black)
+                    .then(
+                        if (outline && state == IslandState.Idle)
+                            Modifier.border(BorderStroke(1.dp, Color.Red), RoundedCornerShape(corner))
+                        else Modifier,
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (toBubbleNow) {
+                    // The closing island is the small pill's content on its way back into place.
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { MiniActivity(split!!) }
+                } else if (splitOn) {
+                    Box(Modifier.size(pillW, COMPACT).align(Alignment.CenterStart)) { MiniActivity(splitLeft!!, towardCamera = true) }
+                } else {
+                    AnimatedContent(
+                        modifier = Modifier.graphicsLayer { alpha = intro.value * contentFade.value },
+                        targetState = state,
+                        transitionSpec = {
+                            (fadeIn(tween(durationMillis = 220, delayMillis = 120)) togetherWith
+                                    fadeOut(tween(durationMillis = 80)))
+                                .using(SizeTransform(clip = false) { _, _ -> snap() })
+                        },
+                        contentAlignment = Alignment.Center,
+                        label = "content",
+                    ) { s ->
+                        val d = s.dims(hole)
+                        Box(Modifier.requiredSize(d.width, d.height)) {
+                            when (s) {
+                                IslandState.Idle -> Unit
+                                IslandState.Charging -> ChargingCompact()
+                                IslandState.ChargingOpen -> ChargingOpen()
+                                IslandState.Timer -> TimerCompact()
+                                IslandState.TimerOpen -> TimerOpenContent()
+                                IslandState.Call -> CallCompact()
+                                IslandState.CallOpen -> CallOpenContent()
+                                IslandState.Nav -> NavCompact()
+                                IslandState.NavOpen -> NavOpenContent()
+                                IslandState.Music -> MusicCompact()
+                                IslandState.MusicOpen -> MusicOpen()
+                                IslandState.Alert -> AlertCompact()
+                                IslandState.Torch -> TorchCompact()
+                                IslandState.TorchOpen -> TorchOpenContent()
+                                IslandState.Device -> if (IslandBus.expandMode == 2) BatteryAlertOpen() else DeviceOpen()
+                            }
                         }
                     }
                 }
+                val ghostEnd = endGhost
+                if (ghostEnd != null && !splitOn && !state.isTall() && endAlpha.value > 0.01f) {
+                    Box(Modifier.size(pillW, COMPACT).align(Alignment.CenterStart).graphicsLayer { alpha = endAlpha.value }) {
+                        MiniActivity(ghostEnd, towardCamera = true)
+                    }
+                }
             }
-        }
-        // The camera / microphone pill: grows out of the hole to the right, green dot on top (camera), orange below (mic).
-        if (privOn) {
-            // It grows from, and shrinks back into, the idle circle over the camera: width, height and position all
-            // follow the same 0..1 progress, so closing is one smooth motion with no cut at the end.
-            val f = privAnim.coerceAtLeast(0f)
-            val idleD = IslandState.Idle.dims(hole).width.value
-            val wide = camD.value / 2 + 4f
-            val pl = -(idleD / 2 + (wide - idleD / 2) * f)
-            val pr = idleD / 2 + (wide - idleD / 2) * f + privExtra * f
-            val pillH = idleD + (COMPACT.value - idleD) * f
-            val centre = hole.centerY.value + HOLE_NUDGE.value * (1f - f)
-            val dy = (centre - pillH / 2) - top.value
-            if (!state.isTall()) {
+            // The camera / microphone pill: grows out of the hole to the right, green dot on top (camera), orange below (mic).
+            // (Not while the position editor is open.)
+            if (privOn && !IslandBus.editingCamera) {
+                // It grows from, and shrinks back into, the idle circle over the camera: width, height and position all
+                // follow the same 0..1 progress, so closing is one smooth motion with no cut at the end.
+                val f = privAnim.coerceAtLeast(0f)
+                val idleD = IslandState.Idle.dims(hole).width.value
+                val wide = camD.value / 2 + 4f
+                val pl0 = -(idleD / 2 + (wide - idleD / 2) * f)
+                val pr0 = idleD / 2 + (wide - idleD / 2) * f + privExtra * f
+                val side = dotsSide.value.coerceIn(0f, 1f)
+                val pl = pl0 + (-pr0 - pl0) * side
+                val pr = pr0 + (-pl0 - pr0) * side
+                val pillH = idleD + (COMPACT.value - idleD) * f
+                val centre = hole.centerY.value + HOLE_NUDGE.value * (1f - f)
+                val dy = (centre - pillH / 2) - top.value
                 Box(
-                    Modifier.padding(top = TOUCH_PAD).offset(x = ((pl + pr) / 2).dp, y = dy.dp)
+                    // (While gliding to a new camera spot it glides along with the island, from where the camera was.)
+                    Modifier.padding(top = TOUCH_PAD)
+                        .offset(
+                            x = ((pl + pr) / 2 + (if (gliding) left.value - targetLeft else 0f)).dp,
+                            y = (dy + (if (gliding) top.value - targetTop else 0f)).dp,
+                        )
                         // requiredSize: exactly this size, whatever space the layout around it offers.
                         .requiredSize((pr - pl).dp, pillH.dp)
                         .clip(RoundedCornerShape((pillH / 2).dp)).background(Color.Black),
                 ) {
-                    PrivacyDots(privCam, privMic, privRec, privHot, Modifier.align(Alignment.CenterEnd).padding(end = 7.dp).graphicsLayer { alpha = f })
+                    PrivacyDots(
+                        privCam, privMic, privRec, privHot,
+                        // The dots slide along inside the pill as it crosses over (bias +1 = right end, -1 = left end).
+                        Modifier.align(androidx.compose.ui.BiasAlignment(1f - 2f * side, 0f))
+                            .padding(start = (7f * side).dp, end = (7f * (1f - side)).dp),
+                    )
                 }
-            } else {
-                // Open island: just the dots, in its top right corner.
-                PrivacyDots(
-                    privCam, privMic, privRec, privHot,
-                    Modifier.padding(top = TOUCH_PAD + 14.dp).offset(x = (r - 16f).dp),
-                )
             }
-        }
-        // The small second pill.
-        // While split, always show what is current; the remembered one is only for the fade-out.
-        val bubbleShown = (if (splitOn) split else bubbleKind)?.takeIf { it != IslandState.Alert }
-        if ((bubbleAlpha.value > 0.01f || demoteNow) && bubbleShown != null) {
-            val bl = if (demoteNow) left.value else bubbleLeft.value
-            val br = if (demoteNow) right.value else bubbleRight.value
-            Box(
-                Modifier.padding(top = TOUCH_PAD).offset(x = ((bl + br) / 2).dp)
-                    .size((br - bl).coerceAtLeast(1f).dp, COMPACT)
-                    .graphicsLayer {
-                        val k = squishBubble * (0.85f + 0.15f * bubbleAlpha.value)
-                        scaleX = k
-                        scaleY = k
-                    }
-                    .alpha(if (demoteNow) 1f else bubbleAlpha.value)
-                    .clip(RoundedCornerShape(COMPACT / 2)).background(Color.Black),
-                contentAlignment = Alignment.Center,
-            ) { MiniActivity(bubbleShown) }
+            // The small second pill.
+            // While split, always show what is current; the remembered one is only for the fade-out.
+            val bubbleShown = (if (splitOn) split else bubbleKind)?.takeIf { it != IslandState.Alert }
+            if ((bubbleAlpha.value > 0.01f || demoteNow) && bubbleShown != null) {
+                val bl = if (demoteNow) left.value else bubbleLeft.value
+                val br = if (demoteNow) right.value else bubbleRight.value
+                Box(
+                    Modifier.padding(top = TOUCH_PAD).offset(x = ((bl + br) / 2).dp)
+                        .size((br - bl).coerceAtLeast(1f).dp, COMPACT)
+                        .graphicsLayer {
+                            val k = squishBubble * (0.85f + 0.15f * bubbleAlpha.value)
+                            scaleX = k
+                            scaleY = k
+                        }
+                        .alpha(if (demoteNow) 1f else bubbleAlpha.value)
+                        .clip(RoundedCornerShape(COMPACT / 2)).background(Color.Black),
+                    contentAlignment = Alignment.Center,
+                ) { MiniActivity(bubbleShown) }
+            }
         }
     }
 }
@@ -1674,12 +1908,12 @@ private fun PrivacyDots(cam: Boolean, mic: Boolean, rec: Boolean, hot: Boolean, 
 /** Two dots, one above the other. When the second switches on it splits off the first; when one of two goes off, they merge. */
 @Composable
 private fun DotPair(a: Boolean, colorA: Color, b: Boolean, colorB: Color, modifier: Modifier) {
-    val yA = remember { Animatable(0f) }
-    val yB = remember { Animatable(0f) }
-    val alphaA = remember { Animatable(0f) }
-    val alphaB = remember { Animatable(0f) }
-    var prevA by remember { mutableStateOf(false) }
-    var prevB by remember { mutableStateOf(false) }
+    val yA = remember { Animatable(if (a && b) -5f else 0f) }
+    val yB = remember { Animatable(if (a && b) 5f else 0f) }
+    val alphaA = remember { Animatable(if (a) 1f else 0f) }
+    val alphaB = remember { Animatable(if (b) 1f else 0f) }
+    var prevA by remember { mutableStateOf(a) }
+    var prevB by remember { mutableStateOf(b) }
     LaunchedEffect(a, b) {
         val spec = spring<Float>(dampingRatio = 0.8f, stiffness = 500f)
         // A dot that switches on starts where the other one is, then they move apart.
@@ -1689,9 +1923,10 @@ private fun DotPair(a: Boolean, colorA: Color, b: Boolean, colorB: Color, modifi
         prevB = b
         val both = a && b
         coroutineScope {
-            launch { alphaA.animateTo(if (a) 1f else 0f, tween(200)) }
-            launch { alphaB.animateTo(if (b) 1f else 0f, tween(200)) }
-            // A dot that switches off slides to the middle (where the remaining one is going) while it fades.
+            // A dot is simply there or not: no fading in or out.
+            alphaA.snapTo(if (a) 1f else 0f)
+            alphaB.snapTo(if (b) 1f else 0f)
+            // A dot that switches off slides to the middle (where the remaining one is going).
             launch { yA.animateTo(if (both) -5f else 0f, spec) }
             launch { yB.animateTo(if (both) 5f else 0f, spec) }
         }
@@ -1731,14 +1966,11 @@ private fun fullIn(minutes: Int, percent: Int): String = when {
 
 @Composable
 private fun ChargingCompact() {
-    Row(
-        Modifier.fillMaxSize().padding(horizontal = 14.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        BatteryIcon(IslandBus.batteryPercent, Modifier.size(24.dp, 12.dp))
-        Text("${IslandBus.batteryPercent}%", color = Green, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-    }
+    CamRow(
+        Modifier.fillMaxSize(),
+        left = { BatteryIcon(IslandBus.batteryPercent, Modifier.size(24.dp, 12.dp)) },
+        right = { Text("${IslandBus.batteryPercent}%", color = Green, fontSize = 14.sp, fontWeight = FontWeight.SemiBold) },
+    )
 }
 
 /** The shared look of the wide pop-ups: an icon, a title with a line under it, and one big value; the camera sits in between. */
@@ -1750,16 +1982,21 @@ internal fun InfoOpen(
     icon: @Composable () -> Unit,
     trailing: @Composable () -> Unit,
 ) {
-    // Exactly the Charging pop-up's layout.
-    Row(Modifier.fillMaxSize().padding(horizontal = 22.dp), verticalAlignment = Alignment.CenterVertically) {
-        icon()
-        Spacer(Modifier.width(14.dp))
-        Column(Modifier.weight(1f)) {
-            Text(title, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
-            Text(subtitle, color = subtitleColor, fontSize = 13.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
-        }
-        trailing()
-    }
+    // Exactly the Charging pop-up's layout (icon and words, then one big value); the camera is kept clear.
+    CamRow(
+        Modifier.fillMaxSize(), pad = 22.dp, gap = IslandBus.camGap - 12.dp,
+        left = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                icon()
+                Spacer(Modifier.width(14.dp))
+                Column {
+                    Text(title, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                    Text(subtitle, color = subtitleColor, fontSize = 13.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                }
+            }
+        },
+        right = { trailing() },
+    )
 }
 
 /** The expanded battery pop-up (low battery, fully charged). */
@@ -1835,16 +2072,11 @@ internal fun TorchOpenContent() {
 
 @Composable
 private fun ChargingOpen() {
-    Row(
-        Modifier.fillMaxSize().padding(horizontal = 22.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        BatteryIcon(IslandBus.batteryPercent, Modifier.size(34.dp, 16.dp))
-        Spacer(Modifier.width(14.dp))
-        Column(Modifier.weight(1f)) {
-            Text("Charging", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-            Text(fullIn(IslandBus.minutesToFull, IslandBus.batteryPercent), color = Gray, fontSize = 13.sp)
-        }
-        Text("${IslandBus.batteryPercent}%", color = Green, fontSize = 24.sp, fontWeight = FontWeight.Bold)
-    }
+    InfoOpen(
+        title = "Charging",
+        subtitle = fullIn(IslandBus.minutesToFull, IslandBus.batteryPercent),
+        subtitleColor = Gray,
+        icon = { BatteryIcon(IslandBus.batteryPercent, Modifier.size(34.dp, 16.dp)) },
+        trailing = { Text("${IslandBus.batteryPercent}%", color = Green, fontSize = 24.sp, fontWeight = FontWeight.Bold) },
+    )
 }

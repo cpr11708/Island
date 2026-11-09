@@ -39,7 +39,7 @@ import kotlinx.coroutines.delay
 private val MiniOrange = Color(0xFFFF9F0A)
 private val MiniGreen = Color(0xFF30D158)
 
-private fun miniClock(ms: Long): String {
+internal fun miniClock(ms: Long): String {
     val t = (ms / 1000).coerceAtLeast(0)
     // Hours and minutes ("1:19") when there are hours, otherwise minutes and seconds ("19:48"): it never ends in a colon.
     return if (t >= 3600) "%d:%02d".format(t / 3600, t % 3600 / 60) else "%d:%02d".format(t / 60, t % 60)
@@ -60,11 +60,12 @@ private fun tick(): Long {
 
 /** What one of the two small pills shows when two things are going at once. */
 @Composable
-internal fun MiniActivity(kind: IslandState) {
+internal fun MiniActivity(kind: IslandState, towardCamera: Boolean = false) {
     val now = tick()
+    // The left pill of a split sits right up against the camera: its content hugs that side.
     Row(
-        Modifier.fillMaxSize().padding(horizontal = 10.dp),
-        horizontalArrangement = Arrangement.Center,
+        Modifier.fillMaxSize().padding(start = if (towardCamera) 8.dp else 10.dp, end = if (towardCamera) 3.dp else 10.dp),
+        horizontalArrangement = if (towardCamera) Arrangement.End else Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically,
     ) {
         when (kind) {
@@ -108,15 +109,11 @@ internal fun MiniActivity(kind: IslandState) {
 @Composable
 internal fun TorchCompact() {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Row(Modifier.requiredWidth(172.dp).fillMaxHeight().padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
-                AlertGlyph("flashlight", Color(0xFF0A84FF), Modifier.size(19.dp))
-            }
-            Spacer(Modifier.width(IslandBus.camGap))
-            Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
-                Text("On", color = Color(0xFF0A84FF), fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
-            }
-        }
+        CamRow(
+            Modifier.requiredWidth(172.dp).fillMaxHeight(),
+            left = { AlertGlyph("flashlight", Color(0xFF0A84FF), Modifier.size(19.dp)) },
+            right = { Text("On", color = Color(0xFF0A84FF), fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1) },
+        )
     }
 }
 
@@ -128,8 +125,9 @@ internal fun AlertCompact() {
     val w = (IslandBus.camGap + (IslandBus.alertText.length * 7 + 30).dp * 2).coerceIn(172.dp, 320.dp)
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         // The icon is left of the camera, the words right of it: nothing is ever drawn under the hole.
-        Row(Modifier.requiredWidth(w).fillMaxHeight().padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+        CamRow(
+            Modifier.requiredWidth(w).fillMaxHeight(),
+            left = {
                 if (IslandBus.alertBattery >= 0) {
                     // A battery that fills up to its level, with the number beside it.
                     val fill = remember(IslandBus.alertKey) { Animatable(0f) }
@@ -142,16 +140,15 @@ internal fun AlertCompact() {
                 } else {
                     AlertGlyph(IslandBus.alertIcon, IslandBus.alertColor, Modifier.size(19.dp))
                 }
-            }
-            Spacer(Modifier.width(IslandBus.camGap))
-            Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
+            },
+            right = {
                 Text(
                     IslandBus.alertText,
                     color = IslandBus.alertColor, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
                     maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                 )
-            }
-        }
+            },
+        )
     }
 }
 

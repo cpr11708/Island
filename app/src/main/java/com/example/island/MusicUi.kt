@@ -67,14 +67,11 @@ private val Track = Color(0xFF3A3A3C)
 /** Compact: album art on the left, a little equaliser on the right. */
 @Composable
 internal fun MusicCompact() {
-    Row(
-        Modifier.fillMaxSize().padding(horizontal = 10.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Art(Modifier.size(24.dp), 7.dp)
-        Equalizer(IslandBus.mediaPlaying)
-    }
+    CamRow(
+        Modifier.fillMaxSize(), pad = 10.dp,
+        left = { Art(Modifier.size(24.dp), 7.dp) },
+        right = { Equalizer(IslandBus.mediaPlaying) },
+    )
 }
 
 private fun clock(ms: Long): String {

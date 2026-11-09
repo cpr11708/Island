@@ -54,7 +54,8 @@ private val CallGray = Color(0xFF8E8E93)
 
 private fun callClock(ms: Long): String {
     val t = (ms / 1000).coerceAtLeast(0)
-    return if (t >= 3600) "%d:%02d:%02d".format(t / 3600, t % 3600 / 60, t % 60) else "%d:%02d".format(t / 60, t % 60)
+    // Hours and minutes ("1:42") once a call passes an hour, otherwise minutes and seconds ("13:28").
+    return if (t >= 3600) "%d:%02d".format(t / 3600, t % 3600 / 60) else "%d:%02d".format(t / 60, t % 60)
 }
 
 /** "Incoming", or the running call time, ticking every second. */
@@ -78,21 +79,20 @@ private fun callText(): String {
 /** Collapsed, like the iPhone: a green phone and the call time on the left, a waveform on the right. */
 @Composable
 internal fun CallCompact() {
-    Row(
-        Modifier.fillMaxSize().padding(horizontal = 14.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Rounded.Phone, contentDescription = null, tint = CallGreen, modifier = Modifier.size(15.dp))
-            Spacer(Modifier.width(5.dp))
-            Text(
-                if (IslandBus.callIncoming) "Incoming" else callText(),
-                color = CallGreen, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
-            )
-        }
-        CallWave()
-    }
+    CamRow(
+        Modifier.fillMaxSize(),
+        left = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Rounded.Phone, contentDescription = null, tint = CallGreen, modifier = Modifier.size(15.dp))
+                Spacer(Modifier.width(5.dp))
+                Text(
+                    if (IslandBus.callIncoming) "Incoming" else callText(),
+                    color = CallGreen, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
+                )
+            }
+        },
+        right = { CallWave() },
+    )
 }
 
 /** Expanded: who is calling, the time, and the buttons the phone app offers (Answer, Decline, Hang up...). */
@@ -102,21 +102,23 @@ internal fun CallOpenContent() {
         // The top row is as tall as the compact island, so the camera sits in its middle: who is calling on the left,
         // the time and a waveform on the right.
         // A little taller than the camera row, so the text sits between the top edge and the name.
-        Row(Modifier.fillMaxWidth().height(COMPACT + 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                "Phone",
-                color = CallGray, fontSize = 16.sp, fontWeight = FontWeight.Medium, maxLines = 1, modifier = Modifier.weight(1f),
-            )
-            Spacer(Modifier.width(IslandBus.camGap))
-            Row(Modifier.weight(1f), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    if (IslandBus.callIncoming) "Incoming" else callText(),
-                    color = CallGray, fontSize = 17.sp, fontWeight = FontWeight.Medium, maxLines = 1,
-                )
-                Spacer(Modifier.width(10.dp))
-                CallWave()
-            }
-        }
+        // (CamRow lays it out around the camera; this column already has 28 dp at each side, so the row adds none.)
+        CamRow(
+            Modifier.fillMaxWidth().height(COMPACT + 12.dp), pad = 0.dp,
+            left = {
+                Text("Phone", color = CallGray, fontSize = 16.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+            },
+            right = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        if (IslandBus.callIncoming) "Incoming" else callText(),
+                        color = CallGray, fontSize = 17.sp, fontWeight = FontWeight.Medium, maxLines = 1,
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    CallWave()
+                }
+            },
+        )
         // The name gets the whole width under the camera, at a comfortable size.
         // Shifted so the space from the "Phone" line to the photo equals the space from the photo to the buttons.
         Row(Modifier.fillMaxWidth().weight(1f).offset(y = -(COMPACT / 4 - 2.dp)), verticalAlignment = Alignment.CenterVertically) {

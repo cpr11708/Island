@@ -43,6 +43,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -238,6 +240,39 @@ private fun SetupScreen() {
                 TextButton(onClick = {
                     context.getSharedPreferences("island", Context.MODE_PRIVATE).edit().remove("lock_x_dp").remove("lock_y_dp").apply()
                 }) { Text("Put the player back in its usual place") }
+            }
+        }
+        // ---- Positioning
+        Heading("Positioning")
+        Card {
+            val prefs = context.getSharedPreferences("island", Context.MODE_PRIVATE)
+            var mode by remember(IslandBus.camVersion) { mutableStateOf(prefs.getString("cam_pos", "auto") ?: "auto") }
+            fun choose(m: String) {
+                mode = m
+                prefs.edit().putString("cam_pos", m).apply()
+                IslandBus.rebuildOverlay?.invoke()
+            }
+            @Composable
+            fun Pick(label: String, m: String) {
+                if (mode == m) Button(onClick = { choose(m) }) { Text(label) }
+                else OutlinedButton(onClick = { choose(m) }) { Text(label) }
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    "Where the island sits. Auto reads the phone's own camera cutout. Pick a place here if the island is in the " +
+                            "wrong spot, or choose Custom to place it yourself.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Pick("Auto", "auto"); Pick("Left corner", "left_corner"); Pick("Left", "left")
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Pick("Centre", "center"); Pick("Right", "right"); Pick("Right corner", "right_corner")
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Pick("Custom", "custom")
+                    if (mode == "custom") Button(onClick = { IslandBus.startCameraEdit?.invoke() }) { Text("Edit") }
+                }
             }
         }
         Text(

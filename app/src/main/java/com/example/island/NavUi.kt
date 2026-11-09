@@ -57,17 +57,16 @@ internal fun NavIcon(modifier: Modifier) {
 /** Collapsed: the turn arrow on the left, the distance to the next turn on the right. */
 @Composable
 internal fun NavCompact() {
-    Row(
-        Modifier.fillMaxSize().padding(horizontal = 14.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        NavIcon(Modifier.size(18.dp))
-        Text(
-            IslandBus.navDistance.ifEmpty { IslandBus.navTitle.take(9) },
-            color = NavBlue, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
-        )
-    }
+    CamRow(
+        Modifier.fillMaxSize(),
+        left = { NavIcon(Modifier.size(18.dp)) },
+        right = {
+            Text(
+                IslandBus.navDistance.ifEmpty { IslandBus.navTitle.take(9) },
+                color = NavBlue, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
+            )
+        },
+    )
 }
 
 /** Expanded: arrival time, big distance, the full instruction, whatever trip summary Maps gives, and Exit. */
@@ -81,14 +80,16 @@ internal fun NavOpenContent() {
     val more = listOf(IslandBus.navMore, if (IslandBus.navTitle != distance && IslandBus.navText != instruction) IslandBus.navText else "")
         .filter { it.isNotBlank() }.joinToString("\n")
     Column(Modifier.fillMaxSize().padding(start = 22.dp, end = 22.dp, bottom = 12.dp)) {
-        Row(Modifier.fillMaxWidth().height(COMPACT), verticalAlignment = Alignment.CenterVertically) {
-            Text("Maps", color = NavGray, fontSize = 13.sp, maxLines = 1, modifier = Modifier.weight(1f))
-            Spacer(Modifier.width(IslandBus.camGap))
-            Text(
-                IslandBus.navSub, color = Color.White, fontSize = 13.sp, maxLines = 1,
-                overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f), textAlign = TextAlign.End,
-            )
-        }
+        CamRow(
+            Modifier.fillMaxWidth().height(COMPACT), pad = 0.dp,
+            left = { Text("Maps", color = NavGray, fontSize = 13.sp, maxLines = 1) },
+            right = {
+                Text(
+                    IslandBus.navSub, color = Color.White, fontSize = 13.sp, maxLines = 1,
+                    overflow = TextOverflow.Ellipsis, textAlign = TextAlign.End,
+                )
+            },
+        )
         Row(Modifier.fillMaxWidth().weight(1f), verticalAlignment = Alignment.CenterVertically) {
             NavIcon(Modifier.size(44.dp))
             Spacer(Modifier.width(14.dp))
