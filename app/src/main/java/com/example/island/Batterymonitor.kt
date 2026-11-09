@@ -8,8 +8,8 @@ import android.os.BatteryManager
 import androidx.core.content.ContextCompat
 
 /**
- * Watches the real battery. When a charger is plugged in, the island pops out as a compact charging pill for a few
- * seconds. Unplugging clears it. It never interrupts something else that is already showing (a call, a timer).
+ * Watches the real battery. When a charger is plugged in, the island opens the expanded charging view for a few
+ * seconds. Unplugging clears it. It briefly takes over from a compact timer, music or flashlight, but never a call or Maps.
  */
 class BatteryMonitor(private val context: Context) {
 
@@ -64,22 +64,22 @@ class BatteryMonitor(private val context: Context) {
             // Plugged in while already full: say so, rather than showing a charging pill that has nothing to charge.
             if (IslandBus.alert("battery", "Fully charged", GREEN, pct)) IslandBus.expandPopup(2)
         } else if (plugged) {
-            if (IslandBus.state == IslandState.Idle) {
-                IslandBus.autoIdleMs = CHARGE_SHOW_MS
-                IslandBus.autoIdle = true
-                IslandBus.state = IslandState.Charging
+            val s = IslandBus.state
+            // A compact timer, music or flashlight gives way for a moment, then comes back. Calls, Maps and anything
+            // expanded are left alone.
+            if (s == IslandState.Idle || s == IslandState.Timer || s == IslandState.Music || s == IslandState.Torch) {
+                if (IslandBus.alert("battery", "Charging", GREEN, pct)) IslandBus.expandPopup(3)
             }
-        } else if (IslandBus.state == IslandState.Charging || IslandBus.state == IslandState.ChargingOpen) {
+        } else if (IslandBus.state == IslandState.Charging || IslandBus.state == IslandState.ChargingOpen ||
+            (IslandBus.state == IslandState.Device && IslandBus.expandMode == 3)
+        ) {
             IslandBus.autoIdle = false
-            IslandBus.state = IslandState.Idle
+            IslandBus.state = IslandBus.restingState()
         }
     }
 
     companion object {
         private val RED = androidx.compose.ui.graphics.Color(0xFFFF453A)
         private val GREEN = androidx.compose.ui.graphics.Color(0xFF30D158)
-
-        /** How long the compact charging pill stays before the island goes idle again. */
-        const val CHARGE_SHOW_MS = 4000L
     }
 }

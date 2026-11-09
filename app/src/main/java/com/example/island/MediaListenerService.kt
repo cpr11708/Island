@@ -406,7 +406,9 @@ class MediaListenerService : NotificationListenerService() {
         // Priority: call > music > timer, so a timer never takes over a call or music (it shows beside them).
         val busy = s == IslandState.Call || s == IslandState.CallOpen || s == IslandState.Music || s == IslandState.MusicOpen
         val showing = s == IslandState.Timer || s == IslandState.TimerOpen
-        if (!busy && (isNew || !showing)) {
+        // An expanded battery or device pop-up only borrows the island for a moment and hands it back itself, so routine updates wait.
+        val borrowed = s == IslandState.Device && IslandBus.autoIdle
+        if (!busy && (isNew || (!showing && !borrowed))) {
             IslandBus.autoIdle = false
             IslandBus.state = IslandState.Timer
         }

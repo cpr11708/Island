@@ -312,6 +312,8 @@ object IslandBus {
     var padCentre = 0f
     /** Extra width (dp) a compact call island needs once its time has more than four characters ("13:28"). */
     var callExtra by androidx.compose.runtime.mutableFloatStateOf(0f)
+    /** How many characters the compact timer's time has ("9:59" is 4), so a pill near a screen end can fit it. */
+    var timerChars by mutableStateOf(5)
     /** How far (dp) the camera's status dots reach past the camera's usual gap, and whether that is on its left. */
     var dotsReach by androidx.compose.runtime.mutableFloatStateOf(0f)
     var dotsOnLeft by mutableStateOf(false)
@@ -460,7 +462,7 @@ object IslandBus {
         if (state == IslandState.Nav || state == IslandState.NavOpen) state = restingState()
     }
 
-    /** Opens a pop-up's expanded view straight away (used by the demo buttons). 1 = Bluetooth device, 2 = battery. */
+    /** Opens a pop-up's expanded view straight away (used by the demo buttons). 1 = Bluetooth device, 2 = battery, 3 = charging. */
     fun expandPopup(mode: Int) {
         autoIdle = false
         expandMode = mode
@@ -847,14 +849,31 @@ private fun IslandState.dims(hole: Hole): DpSize {
     return if (hole.screenW.value > 0f && this != IslandState.Idle) DpSize(minOf(d.width, hole.screenW - 16.dp), d.height) else d
 }
 
+/** Roughly how wide one character of the compact pills' 14 sp text is, in dp. */
+private const val PILL_CHAR_DP = 8.6f
+
+/**
+ * The width a compact pill needs when the camera is near a screen end and [content] all sits on the roomy side,
+ * or [full] when the camera is not near an end. Never wider than [full].
+ */
+private fun hugWidth(hole: Hole, content: Dp, full: Dp): Dp {
+    val edge = minOf(hole.centerX.value, hole.screenW.value - hole.centerX.value)
+    if (hole.screenW.value <= 0f || edge >= 60f) return full
+    // The pill reaches past the camera towards the screen edge (it stops 8 dp short), and always covers the camera.
+    val pastCamera = maxOf(edge - 8f, IslandBus.camGap.value / 2 - 4f)
+    return (pastCamera.dp + IslandBus.camGap / 2 + content + 14.dp).coerceAtMost(full)
+}
+
 private fun IslandState.rawDims(hole: Hole): DpSize = when (this) {
     IslandState.Idle -> {
         // The idle circle also follows the island height setting (36 dp is the standard size).
         val d = if (hole.real) hole.diameter * IDLE_SCALE * (COMPACT.value / 36f) else 2.dp
         DpSize(d, d)
     }
-    IslandState.Charging -> DpSize(190.dp, COMPACT)
-    IslandState.Timer -> DpSize(190.dp, COMPACT)
+    // Battery icon, a space, and "100%".
+    IslandState.Charging -> DpSize(hugWidth(hole, 74.dp, 190.dp), COMPACT)
+    // Timer icon, a space, and the time.
+    IslandState.Timer -> DpSize(hugWidth(hole, (26f + IslandBus.timerChars * PILL_CHAR_DP).dp, 190.dp), COMPACT)
     IslandState.Music -> {
         // With the camera near a screen end both pieces sit on the one roomy side, so hug them instead of leaving a gap.
         val nearEnd = hole.screenW.value > 0f &&
@@ -868,7 +887,12 @@ private fun IslandState.rawDims(hole: Hole): DpSize = when (this) {
     }
     IslandState.ChargingOpen -> DpSize(350.dp, 84.dp)
     IslandState.TimerOpen -> DpSize(340.dp, 104.dp)
-    IslandState.Call -> DpSize(190.dp + IslandBus.callExtra.dp, COMPACT)
+    IslandState.Call -> {
+        // Phone icon, the words or time, a space, and the waveform. "Incoming" and "On call" are longer than a short time.
+        val chars = if (IslandBus.callIncoming || IslandBus.callStartMs <= 0L) 8f else 4f + IslandBus.callExtra / 17f
+        val full = 190.dp + IslandBus.callExtra.dp
+        DpSize(hugWidth(hole, (86f + chars * PILL_CHAR_DP).dp, full), COMPACT)
+    }
     // As wide as the message needs, with the camera's gap kept clear in the middle (the text lives on the right half).
     IslandState.Alert -> DpSize((IslandBus.camGap + (IslandBus.alertText.length * 7 + 30).dp * 2).coerceIn(172.dp, 320.dp), COMPACT)
     IslandState.Nav -> DpSize(190.dp, COMPACT)
@@ -1404,6 +1428,16 @@ fun Island(
         }
     }
     IslandBus.callExtra = (callChars - 4).coerceAtLeast(0) * 17f
+    val timerChars by remember {
+        androidx.compose.runtime.derivedStateOf {
+            if (!IslandBus.timerKnown) 5 else {
+                val ms = IslandBus.timerRemainingMs(tickMs)
+                val t = (if (IslandBus.timerStopwatch) ms else ms + 999L) / 1000
+                if (t >= 3600) 7 else if (t >= 600) 5 else 4
+            }
+        }
+    }
+    IslandBus.timerChars = timerChars
     // The left pill of a split fits what it shows (an icon and a short time) instead of a fixed width.
     val leftKind = splitLeft ?: state
     val miniChars by remember(leftKind) {
@@ -1811,7 +1845,11 @@ fun Island(
                                 IslandState.Alert -> AlertCompact()
                                 IslandState.Torch -> TorchCompact()
                                 IslandState.TorchOpen -> TorchOpenContent()
-                                IslandState.Device -> if (IslandBus.expandMode == 2) BatteryAlertOpen() else DeviceOpen()
+                                IslandState.Device -> when (IslandBus.expandMode) {
+                                    2 -> BatteryAlertOpen()
+                                    3 -> ChargingOpen()
+                                    else -> DeviceOpen()
+                                }
                             }
                         }
                     }
