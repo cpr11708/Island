@@ -319,7 +319,10 @@ class MediaListenerService : NotificationListenerService() {
                     val a = timeInText.groupValues[1].toLong()
                     val b = timeInText.groupValues[2].toLong()
                     val c = timeInText.groupValues[3].takeIf { it.isNotEmpty() }?.toLong()
-                    (if (c != null) a * 3600 + b * 60 + c else a * 60 + b) * 1000
+                    val written = (if (c != null) a * 3600 + b * 60 + c else a * 60 + b) * 1000
+                    // Samsung writes the time once, when the stopwatch starts or resumes, and does not update it:
+                    // while it runs, add the time since the notification was posted.
+                    if (!paused && n.`when` in 1..now) written + (now - n.`when`) else written
                 }
                 else -> null
             }
