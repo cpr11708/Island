@@ -113,7 +113,8 @@ internal fun TimerOpenContent() {
                     }
                     Unit
                 }
-                if (known) {
+                // Once time is up there is nothing to pause: only the button that stops it is left.
+                if (known && !finished) {
                     TimerButton(
                         CallAction(if (IslandBus.timerPaused) "Resume" else "Pause", false, null),
                         onPress = { press("pause") },
@@ -121,7 +122,9 @@ internal fun TimerOpenContent() {
                 }
                 TimerButton(CallAction("Cancel", false, null), onPress = { press("cancel") })
             } else {
-                IslandBus.timerActions.take(3).forEach { action -> TimerButton(action) }
+                IslandBus.timerActions
+                    .filter { !finished || !Regex("pause|resume", RegexOption.IGNORE_CASE).containsMatchIn(it.label) }
+                    .take(3).forEach { action -> TimerButton(action) }
             }
         }
     }

@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -131,7 +132,8 @@ private fun SetupScreen() {
     val allGood = islandReady && listenerOn && batteryFree
 
     Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 28.dp),
+        // Kept clear of the status bar and the gesture bar, so nothing scrolls underneath their icons.
+        Modifier.fillMaxSize().systemBarsPadding().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         // ---- Header
@@ -292,8 +294,8 @@ private fun SetupScreen() {
         Heading("Position and shape")
         Card { PositionAndShape(context) }
         Text(
-            "Tap a compact island to open it, tap again to close it, and swipe it up to dismiss it. " +
-                    "Touch the camera to bring a dismissed one back.",
+            "Tap the island to open its app. Touch and hold it to open it up, and touch anywhere else to close it. " +
+                    "Swipe it up to dismiss it, and touch the camera to bring a dismissed one back.",
             color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp,
         )
 
@@ -652,7 +654,7 @@ private fun IslandPreview(
     spots: List<Float>, chosen: Int, compact: Boolean = false, onTap: (Float) -> Unit,
 ) {
     // A representative expanded island (about the size of the music player), [gap] dp in from the top and the sides.
-    val islandW = minOf(480f, screenW - 2 * gap)
+    val islandW = minOf(OPEN_MAX_W, screenW - 2 * gap)
     val islandH = 130f
     val top = (camY - compactH / 2f).coerceAtLeast(0f)
     val left = (camX - islandW / 2f).coerceIn(gap, screenW - gap - islandW)

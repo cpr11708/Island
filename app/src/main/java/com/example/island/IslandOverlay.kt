@@ -168,7 +168,7 @@ class IslandOverlay(private val context: Context, private val windowType: Int) {
         IslandBus.screenCorner = cornerPx / density
         IslandBus.sideGap = if (camPrefs.getString("cam_pos", "auto") == "custom") 0f else 8f
         // The main window is as wide as the screen (but no wider than the widest island plus its touch margin).
-        val tallWidthDp = (screenW / density).coerceIn(380f, 508f)
+        val tallWidthDp = (screenW / density).coerceIn(380f, OPEN_MAX_W + 2 * TOUCH_PAD.value)
         val camXpx = hole.centerX.value * density
 
         fun params(widthDp: Float, heightDp: Int, name: String) = WindowManager.LayoutParams(

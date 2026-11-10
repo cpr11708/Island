@@ -145,7 +145,16 @@ enum class IslandState {
 data class CallAction(val label: String, val accept: Boolean, val intent: android.app.PendingIntent?)
 
 object IslandBus {
-    var state by mutableStateOf(IslandState.Idle)
+    private val stateHolder = mutableStateOf(IslandState.Idle)
+    /** What the island shows. Setting it also notes when it changed (see [stateChangedMs]). */
+    var state: IslandState
+        get() = stateHolder.value
+        set(v) {
+            if (v != stateHolder.value) stateChangedMs = android.os.SystemClock.elapsedRealtime()
+            stateHolder.value = v
+        }
+    /** When the island last changed what it shows (elapsedRealtime). */
+    @Volatile var stateChangedMs = 0L
     /** Draws a red outline on the idle pill so you can see where it sits relative to the camera. */
     var showOutline by mutableStateOf(false)
 
@@ -839,6 +848,9 @@ object IslandBus {
         val t = android.os.SystemClock.elapsedRealtime()
         uiHandler.postDelayed({
             if (lastIslandDownMs >= t - 150) logClose("ignored an outside signal: the touch was on the island")
+            // A touch that began before the island changed (a button that opened a pop-up when the finger lifted, or a
+            // pop-up that arrived mid-tap) was not meant for what is showing now.
+            else if (stateChangedMs > t) logClose("ignored an outside signal: it began before the island changed")
             else outsideTouchNow()
         }, 70)
     }
@@ -888,7 +900,7 @@ const val ISLAND_H_MIN = 28f
 const val ISLAND_H_MAX = 56f
 
 /** The widest an expanded island gets, for screens much wider than a phone's. */
-private const val OPEN_MAX_W = 480f
+internal const val OPEN_MAX_W = 600f
 
 private fun IslandState.dims(hole: Hole): DpSize {
     var d = rawDims(hole)
