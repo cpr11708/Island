@@ -536,16 +536,17 @@ private fun PositionAndShape(context: Context) {
     }
     val camY = if (mode == "custom" && prefs.getBoolean("cam_y_on", false)) prefs.getFloat("cam_y_dp", 20f) else autoY
     val compactH = if (mode == "custom") prefs.getFloat("island_h", 36f) else 36f
-    val gap = if (mode == "custom") 0f else 8f
-    // The corner the island will use (the same rule as the island itself, see IslandBus.openCorner).
-    val corner = (if (!IslandBus.cornerAuto) IslandBus.cornerCustom else if (screenCorner > 0f) screenCorner else OPEN_CORNER.value)
+    // The expanded island sits as far from the sides as from the top, with the corners the island will use
+    // (the same rules as the island itself: Hole.edgeGap and IslandBus.openCorner).
+    val edgeGap = (camY - compactH / 2f).coerceAtLeast(0f)
+    val corner = (if (!IslandBus.cornerAuto) IslandBus.cornerCustom else if (screenCorner > 0f) screenCorner - edgeGap else OPEN_CORNER.value)
         .coerceAtLeast(compactH / 2f)
     val corners = androidx.compose.animation.core.animateFloatAsState(corner, label = "preview corner").value
     val islandX = androidx.compose.animation.core.animateFloatAsState(camX, label = "preview spot").value
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         IslandPreview(
-            screenW = screenW, screenCorner = screenCorner, camX = islandX, camY = camY, compactH = compactH, gap = gap,
+            screenW = screenW, screenCorner = screenCorner, camX = islandX, camY = camY, compactH = compactH, gap = edgeGap,
             corner = corners, spots = spots.map { it.third }, chosen = spots.indexOfFirst { it.first == mode },
             onTap = { x -> choose(spots.minBy { kotlin.math.abs(it.third - x) }.first) },
         )
@@ -611,8 +612,8 @@ private fun IslandPreview(
     screenW: Float, screenCorner: Float, camX: Float, camY: Float, compactH: Float, gap: Float, corner: Float,
     spots: List<Float>, chosen: Int, onTap: (Float) -> Unit,
 ) {
-    // A representative expanded island (about the size of the music player).
-    val islandW = minOf(350f, screenW - 2 * gap)
+    // A representative expanded island (about the size of the music player), [gap] dp in from the top and the sides.
+    val islandW = minOf(480f, screenW - 2 * gap)
     val islandH = 130f
     val top = (camY - compactH / 2f).coerceAtLeast(0f)
     val left = (camX - islandW / 2f).coerceIn(gap, screenW - gap - islandW)

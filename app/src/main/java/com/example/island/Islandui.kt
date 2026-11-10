@@ -318,9 +318,13 @@ object IslandBus {
     /** True: an expanded island's corners match the screen's. False: they use [cornerCustom] (the "corners" setting). */
     var cornerAuto by mutableStateOf(true)
     var cornerCustom by androidx.compose.runtime.mutableFloatStateOf(OPEN_CORNER.value)
-    /** The corner radius (dp) of an expanded island. Never under half a compact pill's height, so the pill stays round. */
-    val openCorner: Float
-        get() = (if (!cornerAuto) cornerCustom else if (screenCorner > 0f) screenCorner else OPEN_CORNER.value)
+    /**
+     * The corner radius (dp) of an expanded island that sits [gap] dp in from the screen's edges. Matching the screen, it
+     * is the screen's corner less that gap, so the two curves run side by side. Never under half a compact pill's
+     * height, so the pill stays round.
+     */
+    fun openCorner(gap: Float): Float =
+        (if (!cornerAuto) cornerCustom else if (screenCorner > 0f) screenCorner - gap else OPEN_CORNER.value)
             .coerceAtLeast(compactH / 2f)
     /** Where the middle of the island is, in dp from the camera's centre (not zero when the camera is off to one side). */
     var pillCentre by androidx.compose.runtime.mutableFloatStateOf(0f)
@@ -867,8 +871,21 @@ const val IDLE_AFTER_MS = 1500L
 data class Hole(val centerX: Dp, val centerY: Dp, val diameter: Dp, val real: Boolean, val screenW: Dp = 0.dp)
 
 /** The island's size, never wider than the screen (with a little room at each side). */
+/**
+ * How far an expanded island sits from the top of the screen (it hangs from the camera like a compact one). It keeps
+ * the same distance from the sides, so it sits evenly inside the screen's corners.
+ */
+internal fun Hole.edgeGap(): Float = (centerY.value - IslandBus.compactH / 2f).coerceAtLeast(0f)
+
+/** The widest an expanded island gets, for screens much wider than a phone's. */
+private const val OPEN_MAX_W = 480f
+
 private fun IslandState.dims(hole: Hole): DpSize {
     var d = rawDims(hole)
+    // An expanded island fills the screen's width less the same gap it has at the top.
+    if (isTall() && hole.screenW.value > 0f) {
+        return DpSize(minOf(hole.screenW.value - 2 * hole.edgeGap(), OPEN_MAX_W).dp, d.height)
+    }
     // The camera's dots take room next to the camera: a compact island grows by that much.
     if (this != IslandState.Idle && !isTall()) d = DpSize(d.width + IslandBus.dotsReach.dp, d.height)
     return if (hole.screenW.value > 0f && this != IslandState.Idle) DpSize(minOf(d.width, hole.screenW - (IslandBus.sideGap * 2).dp), d.height) else d
@@ -1515,8 +1532,11 @@ fun Island(
         val want = if (state.isTall() || splitOn) 0f else if (dotsLeft) -dotsReach / 2 else dotsReach / 2
         val lim = (w / 2 - (camD.value / 2 + 4f)).coerceAtLeast(0f)
         if (screenWv <= 0f) want.coerceIn(-lim, lim) else {
-            val low = IslandBus.sideGap - camX + w / 2   // the furthest left the middle can go (left edge sideGap dp from the screen's edge)
-            val high = (screenWv - IslandBus.sideGap - camX) - w / 2
+            // The furthest left and right the middle can go: the edges stay sideGap dp from the screen's sides
+            // (an expanded island keeps the same gap as at its top).
+            val g = if (state.isTall()) hole.edgeGap() else IslandBus.sideGap
+            val low = g - camX + w / 2
+            val high = (screenWv - g - camX) - w / 2
             val fit = if (low > high) low else want.coerceIn(low, high)
             fit.coerceIn(-lim, lim)
         }
@@ -1790,7 +1810,7 @@ fun Island(
     val centre = (l + r) / 2
     // While gliding to a new camera spot, the content is laid out as if the island were already there (it just rides along).
     IslandBus.pillCentre = if (gliding) centre - (leftNow - targetLeft) else centre
-    val corner = minOf(h / 2, IslandBus.openCorner).dp
+    val corner = minOf(h / 2, IslandBus.openCorner(hole.edgeGap())).dp
     val privOn = privAnim > 0.01f
     // The touch box reaches from the island's left end to its right end (the dots pill and the small pill included), so it
     // can sit off-centre when the camera is not in the middle. Its middle is [boxCentre] dp from the camera.
