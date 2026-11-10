@@ -139,6 +139,81 @@ class IslandAccessibilityService : AccessibilityService() {
         }
     }
 
+    /**
+     * The outline only shows when the island would otherwise vanish: a screenshot is checked along a thin ring just
+     * outside the island's edge, and if every point there is black, the outline is drawn. Checked about twice a second
+     * while the island shows something (and the outline is switched on); nothing is kept or sent anywhere.
+     */
+    private var blackBusy = false
+    private val blackWatch = object : Runnable {
+        override fun run() {
+            handler.postDelayed(this, 600)
+            val pm = getSystemService(android.os.PowerManager::class.java)
+            val rect = IslandBus.islandOnScreen
+            if (!IslandBus.edgeOutline || IslandBus.state == IslandState.Idle || rect == null || !pm.isInteractive) {
+                if (IslandBus.behindBlack) IslandBus.behindBlack = false
+                return
+            }
+            if (blackBusy) return
+            blackBusy = true
+            runCatching {
+                takeScreenshot(android.view.Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
+                    override fun onSuccess(shot: ScreenshotResult) {
+                        blackBusy = false
+                        val black = runCatching { ringIsBlack(shot, rect) }.getOrDefault(false)
+                        runCatching { shot.hardwareBuffer.close() }
+                        if (IslandBus.behindBlack != black) IslandBus.behindBlack = black
+                    }
+                    override fun onFailure(errorCode: Int) { blackBusy = false }
+                })
+            }.onFailure { blackBusy = false }
+        }
+    }
+
+    /**
+     * True when the ring 7 dp outside [r] is black: at least 80% of its points (very dark grey counts as black), so
+     * small things like status bar icons beside the island do not count against it.
+     */
+    private fun ringIsBlack(shot: ScreenshotResult, r: android.graphics.Rect): Boolean {
+        val hw = android.graphics.Bitmap.wrapHardwareBuffer(shot.hardwareBuffer, shot.colorSpace) ?: return false
+        val d = resources.displayMetrics.density
+        // A little way out, past most of the island's own soft glow (a pop-up has one).
+        val out = (7 * d).toInt()
+        // Only the strip of the screen around the island is copied out of the screenshot.
+        val left = (r.left - out).coerceIn(0, hw.width - 1)
+        val right = (r.right + out).coerceIn(left + 1, hw.width)
+        val bottom = (r.bottom + out).coerceIn(1, hw.height)
+        val strip = android.graphics.Bitmap.createBitmap(hw, left, 0, right - left, bottom)
+            .copy(android.graphics.Bitmap.Config.ARGB_8888, false)
+        hw.recycle()
+        fun dark(x: Int, y: Int): Boolean {
+            val c = strip.getPixel((x - left).coerceIn(0, strip.width - 1), y.coerceIn(0, strip.height - 1))
+            // Very dark grey (like the faint end of that glow) still counts as black.
+            return maxOf(android.graphics.Color.red(c), android.graphics.Color.green(c), android.graphics.Color.blue(c)) <= 20
+        }
+        val step = (5 * d).toInt().coerceAtLeast(1)
+        var seen = 0
+        var darkCount = 0
+        fun look(x: Int, y: Int) { seen++; if (dark(x, y)) darkCount++ }
+        try {
+            // The two sides, from the top of the screen down past the island's bottom.
+            for (y in 0..bottom - 1 step step) {
+                if (r.left - out >= 0) look(r.left - out, y)
+                if (r.right + out < hw.width) look(r.right + out, y)
+            }
+            // Below it, and above it when there is room between it and the top of the screen.
+            for (x in (r.left - out)..(r.right + out) step step) {
+                if (x < 0 || x >= hw.width) continue
+                look(x, bottom - 1)
+                if (r.top - out >= 0) look(x, r.top - out)
+            }
+            // Mostly black counts: the status bar's small white icons beside the island do not make the screen light.
+            return seen > 0 && darkCount >= seen * 0.8f
+        } finally {
+            strip.recycle()
+        }
+    }
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         IslandBus.appContext = applicationContext
@@ -152,6 +227,8 @@ class IslandAccessibilityService : AccessibilityService() {
         handler.post(shadeWatch)
         handler.removeCallbacks(cmdWatch)
         handler.post(cmdWatch)
+        handler.removeCallbacks(blackWatch)
+        handler.post(blackWatch)
     }
 
     // Only used to learn which app is in front, so the music player can stay hidden while you are in the music app.
@@ -180,6 +257,7 @@ class IslandAccessibilityService : AccessibilityService() {
         handler.removeCallbacks(poll)
         handler.removeCallbacks(shadeWatch)
         handler.removeCallbacks(cmdWatch)
+        handler.removeCallbacks(blackWatch)
         overlay?.stop()
         overlay = null
         return super.onUnbind(intent)
@@ -187,6 +265,7 @@ class IslandAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         handler.removeCallbacks(poll)
+        handler.removeCallbacks(blackWatch)
         handler.removeCallbacks(cmdWatch)
         overlay?.stop()
         overlay = null

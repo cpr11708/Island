@@ -470,6 +470,14 @@ class IslandOverlay(private val context: Context, private val windowType: Int) {
      * It waits until the island has stopped changing shape, so the window is not resized on every animation frame.
      */
     private fun fitPad(r: androidx.compose.ui.geometry.Rect, camXpx: Float) {
+        // Where the island itself is on the screen (the touch box less its margin), for the outline's black check.
+        mainParams?.let { main ->
+            val pad = TOUCH_PAD.value * context.resources.displayMetrics.density
+            IslandBus.islandOnScreen = if (IslandBus.state == IslandState.Idle) null else android.graphics.Rect(
+                (main.x + r.left + pad).toInt(), (r.top + pad).toInt().coerceAtLeast(0),
+                (main.x + r.right - pad).toInt(), (r.bottom - pad).toInt(),
+            )
+        }
         if (r.width < 4f || r.height < 4f) return
         padRect = r
         padCamX = camXpx

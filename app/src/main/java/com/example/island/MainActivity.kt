@@ -277,7 +277,7 @@ private fun SetupScreen() {
             Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 PrefSwitch(context, "Camera and microphone dots", "A green or orange dot beside the camera while one is in use.", "privacy_dots", IslandBus.privacyEnabled) { IslandBus.privacyEnabled = it }
                 PrefSwitch(context, "Recording and hotspot dots", "Red while the screen is recorded, green while the hotspot is on.", "status_pills", IslandBus.statusPills) { IslandBus.statusPills = it }
-                PrefSwitch(context, "Outline", "A faint grey edge around the island while it shows something, so it stays visible on black screens.", "island_outline", IslandBus.edgeOutline) { IslandBus.edgeOutline = it }
+                PrefSwitch(context, "Outline", "A faint grey edge around the island, only while everything around it is black, so it never disappears into the screen.", "island_outline", IslandBus.edgeOutline) { IslandBus.edgeOutline = it }
                 PrefSwitch(context, "Music on the lock screen", "A music player near the bottom while locked and playing.", "lock_player", IslandBus.lockPlayer) { IslandBus.lockPlayer = it }
                 Text(
                     "Touch and hold the lock screen player, then drag, to move it. Tap the handle at its top, or swipe it down, to shrink it.",

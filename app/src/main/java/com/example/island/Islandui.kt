@@ -429,8 +429,14 @@ object IslandBus {
     /** How close (dp) the island may come to the screen's sides: 8 normally, 0 for a Custom position (like the top). */
     var sideGap = 8f
 
-    /** A faint edge around a showing island, so it can still be seen against a black screen. On by default. */
+    /** The user's switch for the faint edge around a showing island. On by default. */
     var edgeOutline by mutableStateOf(true)
+    /** True while everything just around the island is black (checked by the accessibility service from a screenshot). */
+    var behindBlack by mutableStateOf(false)
+    /** The edge only shows where it is needed: a black island on a black screen. */
+    val edgeShown: Boolean get() = edgeOutline && behindBlack
+    /** Where the visible island is on the screen, in pixels (null when nothing is showing). */
+    @Volatile var islandOnScreen: android.graphics.Rect? = null
     var camActive by mutableStateOf(false)
     var micActive by mutableStateOf(false)
     /** Screen recording, and hotspot / tethering (from a broadcast, or from the phone's own notification). */
@@ -1868,7 +1874,7 @@ fun Island(
                     .then(
                         if (outline && state == IslandState.Idle)
                             Modifier.border(BorderStroke(1.dp, Color.Red), RoundedCornerShape(corner))
-                        else if (IslandBus.edgeOutline && state != IslandState.Idle)
+                        else if (IslandBus.edgeShown && state != IslandState.Idle)
                             Modifier.border(BorderStroke(1.dp, EdgeColor), RoundedCornerShape(corner))
                         else Modifier,
                     ),
@@ -1975,7 +1981,7 @@ fun Island(
                         }
                         .alpha(if (demoteNow) 1f else bubbleAlpha.value)
                         .clip(RoundedCornerShape(COMPACT / 2)).background(Color.Black)
-                        .then(if (IslandBus.edgeOutline) Modifier.border(BorderStroke(1.dp, EdgeColor), RoundedCornerShape(COMPACT / 2)) else Modifier),
+                        .then(if (IslandBus.edgeShown) Modifier.border(BorderStroke(1.dp, EdgeColor), RoundedCornerShape(COMPACT / 2)) else Modifier),
                     contentAlignment = Alignment.Center,
                 ) { MiniActivity(bubbleShown) }
             }
