@@ -114,13 +114,17 @@ class IslandOverlay(private val context: Context, private val windowType: Int) {
         val screenW = metrics.bounds.width()
 
         // Turn the cutout into a circle. Some phones report a box that runs from the very top of the screen to the
-        // bottom of the camera, so the circle is as wide as the box and sits at the bottom of it.
+        // bottom of the camera, so the circle is as wide as the box and sits at the bottom of it. A notch (a box wider
+        // than it is tall, as on many emulators) would make that circle bigger than the box and push it above the
+        // screen, so there the circle is as tall as the box and sits in its middle. It never starts above the screen.
         val rect = metrics.windowInsets.displayCutout?.boundingRectTop
         val hole0 = if (rect != null && !rect.isEmpty) {
-            val d = rect.width().toFloat()
+            val wide = rect.width() > rect.height()
+            val d = if (wide) rect.height().toFloat() else rect.width().toFloat()
+            val cy = if (wide) rect.exactCenterY() else rect.bottom - d / 2f
             Hole(
                 centerX = (rect.exactCenterX() / density).dp,
-                centerY = ((rect.bottom - d / 2f) / density).dp,
+                centerY = (maxOf(cy, d / 2f) / density).dp,
                 diameter = (d / density).dp,
                 real = true,
                 screenW = (screenW / density).dp,
