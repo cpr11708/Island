@@ -883,6 +883,10 @@ data class Hole(val centerX: Dp, val centerY: Dp, val diameter: Dp, val real: Bo
  */
 internal fun Hole.edgeGap(): Float = (centerY.value - IslandBus.compactH / 2f).coerceAtLeast(0f)
 
+/** The range of the island height setting (dp). */
+const val ISLAND_H_MIN = 28f
+const val ISLAND_H_MAX = 56f
+
 /** The widest an expanded island gets, for screens much wider than a phone's. */
 private const val OPEN_MAX_W = 480f
 
@@ -1529,7 +1533,9 @@ fun Island(
     IslandBus.splitBubbleEndDp = rightExt.value + 10f
 
     val dims = state.dims(hole)
-    val compactTop = hole.centerY - COMPACT / 2
+    // A compact island hangs with the camera at its middle, but never higher than the top of the screen (a tall island
+    // over a camera near the top just starts at the top).
+    val compactTop = (hole.centerY - COMPACT / 2).coerceAtLeast(0.dp)
     // Where the main pill wants to be, as its left and right edges (dp from the camera's centre), height and top.
     // A camera away from the middle of the screen: the island slides over so it stays on the screen, still covering the camera.
     val shift = if (state == IslandState.Idle) 0f else {

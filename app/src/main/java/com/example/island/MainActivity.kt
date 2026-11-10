@@ -535,7 +535,10 @@ private fun PositionAndShape(context: Context) {
         else -> spots.firstOrNull { it.first == mode }?.third ?: autoX
     }
     val camY = if (mode == "custom" && prefs.getBoolean("cam_y_on", false)) prefs.getFloat("cam_y_dp", 20f) else autoY
-    val compactH = if (mode == "custom") prefs.getFloat("island_h", 36f) else 36f
+    // The island's height, for every position. The real island follows the slider as it moves.
+    var compactH by remember(IslandBus.camVersion) { mutableStateOf(prefs.getFloat("island_h", 36f)) }
+    // The preview shows a compact island while the height is being set, and an expanded one for the corners.
+    var showCompact by remember { mutableStateOf(false) }
     // The expanded island sits as far from the sides as from the top, with the corners the island will use
     // (the same rules as the island itself: Hole.edgeGap and IslandBus.openCorner).
     val edgeGap = (camY - compactH / 2f).coerceAtLeast(0f)
@@ -548,12 +551,13 @@ private fun PositionAndShape(context: Context) {
         IslandPreview(
             screenW = screenW, screenCorner = screenCorner, camX = islandX, camY = camY, compactH = compactH, gap = edgeGap,
             corner = corners, spots = spots.map { it.third }, chosen = spots.indexOfFirst { it.first == mode },
+            compact = showCompact,
             onTap = { x -> choose(spots.minBy { kotlin.math.abs(it.third - x) }.first) },
         )
         Text(
             when (mode) {
                 "auto" -> "Auto: the island sits over your phone's own camera. Tap a spot above to move it somewhere else."
-                "custom" -> "Custom: you set where the camera is and how tall the island is."
+                "custom" -> "Custom: you set exactly where the camera is."
                 else -> "${spots.first { it.first == mode }.second}. Tap another spot to move it, or pick Auto or Custom."
             },
             color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp,
@@ -570,7 +574,42 @@ private fun PositionAndShape(context: Context) {
         }
         if (mode == "custom") {
             OutlinedButton(onClick = { IslandBus.startCameraEdit?.invoke() }, modifier = Modifier.fillMaxWidth()) {
-                Text("Edit position and height")
+                Text("Edit position")
+            }
+        }
+
+        Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)))
+
+        // How tall a compact island is, in every position.
+        Column {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Island height", fontWeight = FontWeight.Medium, fontSize = 16.sp)
+                    Text(
+                        "How tall the small island is. The island on your screen follows as you slide.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp,
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Text("${compactH.roundToInt()} dp", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
+            }
+            Slider(
+                value = compactH,
+                onValueChange = {
+                    compactH = it.roundToInt().toFloat()
+                    showCompact = true
+                    IslandBus.compactH = compactH
+                },
+                onValueChangeFinished = { prefs.edit().putFloat("island_h", compactH).apply() },
+                valueRange = ISLAND_H_MIN..ISLAND_H_MAX,
+            )
+            if (compactH != 36f) {
+                TextButton(onClick = {
+                    compactH = 36f
+                    showCompact = true
+                    IslandBus.compactH = 36f
+                    prefs.edit().putFloat("island_h", 36f).apply()
+                }) { Text("Back to the usual height (36 dp)") }
             }
         }
 
@@ -585,7 +624,7 @@ private fun PositionAndShape(context: Context) {
                 else -> "Your screen reports square corners, so an expanded island uses ${OPEN_CORNER.value.roundToInt()} dp. Turn this off to pick your own."
             },
             "corner_auto", IslandBus.cornerAuto,
-        ) { IslandBus.cornerAuto = it }
+        ) { IslandBus.cornerAuto = it; showCompact = false }
         if (!IslandBus.cornerAuto) {
             Column {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -594,7 +633,7 @@ private fun PositionAndShape(context: Context) {
                 }
                 Slider(
                     value = IslandBus.cornerCustom,
-                    onValueChange = { IslandBus.cornerCustom = it.roundToInt().toFloat() },
+                    onValueChange = { IslandBus.cornerCustom = it.roundToInt().toFloat(); showCompact = false },
                     onValueChangeFinished = { prefs.edit().putFloat("corner_dp", IslandBus.cornerCustom).apply() },
                     valueRange = 18f..64f,
                 )
@@ -610,7 +649,7 @@ private fun PositionAndShape(context: Context) {
 @Composable
 private fun IslandPreview(
     screenW: Float, screenCorner: Float, camX: Float, camY: Float, compactH: Float, gap: Float, corner: Float,
-    spots: List<Float>, chosen: Int, onTap: (Float) -> Unit,
+    spots: List<Float>, chosen: Int, compact: Boolean = false, onTap: (Float) -> Unit,
 ) {
     // A representative expanded island (about the size of the music player), [gap] dp in from the top and the sides.
     val islandW = minOf(480f, screenW - 2 * gap)
@@ -641,16 +680,21 @@ private fun IslandPreview(
         }
         drawPath(screen, screenColor)
         drawPath(screen, edgeColor.copy(alpha = 0.7f), style = androidx.compose.ui.graphics.drawscope.Stroke(1.5.dp.toPx()))
-        // The expanded island, with a faint edge as on the phone.
-        val cr = minOf(corner, islandH / 2f) * k
+        // The island, with a faint edge as on the phone: expanded, or (while the height is being set) a compact pill
+        // about the size of a music one.
+        val pillW = 160f
+        val bx = if (compact) (camX - pillW / 2f).coerceIn(8f, screenW - 8f - pillW) else left
+        val bw = if (compact) pillW else islandW
+        val bh = if (compact) compactH else islandH
+        val cr = (if (compact) compactH / 2f else minOf(corner, islandH / 2f)) * k
         drawRoundRect(
-            Color.Black, topLeft = androidx.compose.ui.geometry.Offset(left * k, top * k),
-            size = androidx.compose.ui.geometry.Size(islandW * k, islandH * k),
+            Color.Black, topLeft = androidx.compose.ui.geometry.Offset(bx * k, top * k),
+            size = androidx.compose.ui.geometry.Size(bw * k, bh * k),
             cornerRadius = androidx.compose.ui.geometry.CornerRadius(cr, cr),
         )
         drawRoundRect(
-            Color(0xFF3A3A3C), topLeft = androidx.compose.ui.geometry.Offset(left * k, top * k),
-            size = androidx.compose.ui.geometry.Size(islandW * k, islandH * k),
+            Color(0xFF3A3A3C), topLeft = androidx.compose.ui.geometry.Offset(bx * k, top * k),
+            size = androidx.compose.ui.geometry.Size(bw * k, bh * k),
             cornerRadius = androidx.compose.ui.geometry.CornerRadius(cr, cr),
             style = androidx.compose.ui.graphics.drawscope.Stroke(1.dp.toPx()),
         )

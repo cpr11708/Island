@@ -160,8 +160,8 @@ class IslandOverlay(private val context: Context, private val windowType: Int) {
         IslandBus.screenWdp = screenWdpAll
         IslandBus.autoCamX = hole0.centerX.value
         IslandBus.autoCamY = hole0.centerY.value
-        // The island's height only applies when the position is Custom.
-        IslandBus.compactH = if (camPrefs.getString("cam_pos", "auto") == "custom") camPrefs.getFloat("island_h", 36f) else 36f
+        // The island's height (set in the app, or in the position editor) applies to every position.
+        IslandBus.compactH = camPrefs.getFloat("island_h", 36f)
         // The screen's rounded corners (the larger of the two top ones), so an expanded island can match them.
         val cornerPx = listOf(android.view.RoundedCorner.POSITION_TOP_LEFT, android.view.RoundedCorner.POSITION_TOP_RIGHT)
             .maxOfOrNull { metrics.windowInsets.getRoundedCorner(it)?.radius ?: 0 } ?: 0

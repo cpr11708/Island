@@ -152,7 +152,7 @@ fun CameraEditor(
             }
             EditSlider("Across", "${(x / screenW * 100).roundToInt()}%", x, 0f, screenW) { x = it.coerceIn(diameter / 2f, screenW - diameter / 2f) }
             EditSlider("Down", "${y.roundToInt()} dp", y, 8f, CAM_MAX_Y) { y = it }
-            EditSlider("Island height", "${size.roundToInt()} dp", size, 28f, 46f) { size = it; onSizeLive(it) }
+            EditSlider("Island height", "${size.roundToInt()} dp", size, ISLAND_H_MIN, ISLAND_H_MAX) { size = it; onSizeLive(it) }
         }
         // A small confirmation, drawn here (a normal dialog cannot open inside an overlay). It fades and springs in.
         androidx.compose.animation.AnimatedVisibility(
