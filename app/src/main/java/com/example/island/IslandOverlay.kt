@@ -135,7 +135,19 @@ class IslandOverlay(private val context: Context, private val windowType: Int) {
         // The person can choose where the camera is (a list, or a slider) instead of the phone's own cutout.
         val camPrefs = context.getSharedPreferences("island", Context.MODE_PRIVATE)
         val screenWdpAll = screenW / density
-        val chosenX: Float? = when (camPrefs.getString("cam_pos", "auto")) {
+        // The unfolded main screen is much bigger than the cover screen (at least 600 dp both ways). The position
+        // setting is made for the cover screen, so the main screen always uses its own camera, as the phone reports it.
+        val bigScreen = minOf(metrics.bounds.width(), metrics.bounds.height()) / density >= 600f
+        IslandBus.bigScreen = bigScreen
+        // A regular phone is about 20:9; the Fold's cover screen is much wider for its height.
+        IslandBus.wideScreen = maxOf(metrics.bounds.width(), metrics.bounds.height()).toFloat() /
+                minOf(metrics.bounds.width(), metrics.bounds.height()) < 1.9f
+        // Samsung's main screen does not report its camera, so it has its own spot (set with the editor while
+        // unfolded). Until then it uses the spot measured on the owner's Fold.
+        val camMode = if (bigScreen) (if (hole0.real && !camPrefs.contains("main_cam_x_pct")) "auto" else "main")
+            else camPrefs.getString("cam_pos", "auto")
+        val chosenX: Float? = when (camMode) {
+            "main" -> screenWdpAll * camPrefs.getFloat("main_cam_x_pct", MAIN_CAM_X_PCT) / 100f
             "left_corner" -> 30f
             "left" -> screenWdpAll * 0.25f
             "center" -> screenWdpAll * 0.5f
@@ -152,11 +164,14 @@ class IslandOverlay(private val context: Context, private val windowType: Int) {
             screenW = hole0.screenW,
         )
         // How far down the camera is, if the person set it by hand.
-        val hole = if (camPrefs.getBoolean("cam_y_on", false) && camPrefs.getString("cam_pos", "auto") == "custom") {
+        val hole = if (camMode == "main") {
+            hole1.copy(centerY = camPrefs.getFloat("main_cam_y_dp", MAIN_CAM_Y_DP).dp, clear = MAIN_CAM_D.dp)
+        } else if (camPrefs.getBoolean("cam_y_on", false) && camMode == "custom") {
             hole1.copy(centerY = camPrefs.getFloat("cam_y_dp", 20f).dp)
         } else hole1
         lastHole = hole
-        autoHole = hole0
+        // The editor's Reset goes back to the phone's own camera, or on the main screen (which reports none) the guess.
+        autoHole = if (bigScreen && !hole0.real) hole0.copy(centerX = (screenWdpAll * MAIN_CAM_X_PCT / 100f).dp, centerY = MAIN_CAM_Y_DP.dp) else hole0
         IslandBus.screenWdp = screenWdpAll
         IslandBus.autoCamX = hole0.centerX.value
         IslandBus.autoCamY = hole0.centerY.value
@@ -166,7 +181,16 @@ class IslandOverlay(private val context: Context, private val windowType: Int) {
         val cornerPx = listOf(android.view.RoundedCorner.POSITION_TOP_LEFT, android.view.RoundedCorner.POSITION_TOP_RIGHT)
             .maxOfOrNull { metrics.windowInsets.getRoundedCorner(it)?.radius ?: 0 } ?: 0
         IslandBus.screenCorner = cornerPx / density
-        IslandBus.sideGap = if (camPrefs.getString("cam_pos", "auto") == "custom") 0f else 8f
+        IslandBus.sideGap = if (camMode == "custom" || camMode == "main") 0f else 8f
+        // An expanded island is as wide on the main screen as on the cover screen. The cover screen's width is
+        // remembered each time the island is built there.
+        val gapDp = (hole.centerY.value - IslandBus.compactH / 2f).coerceAtLeast(0f)
+        if (bigScreen) {
+            IslandBus.openW = camPrefs.getFloat("cover_open_w", OPEN_WIDE_W)
+        } else {
+            IslandBus.openW = 0f
+            camPrefs.edit().putFloat("cover_open_w", openWidthFor(screenWdpAll, gapDp)).apply()
+        }
         // The main window is as wide as the screen (but no wider than the widest island plus its touch margin).
         val tallWidthDp = (screenW / density).coerceIn(380f, OPEN_MAX_W + 2 * TOUCH_PAD.value)
         val camXpx = hole.centerX.value * density
@@ -678,13 +702,14 @@ class IslandOverlay(private val context: Context, private val windowType: Int) {
                     if (!closing) {
                         closing = true
                         IslandBus.compactH = size
-                        context.getSharedPreferences("island", Context.MODE_PRIVATE).edit()
-                            .putString("cam_pos", "custom")
+                        val ed = context.getSharedPreferences("island", Context.MODE_PRIVATE).edit()
+                        // Unfolded, the editor sets the main screen's own spot and leaves the cover screen's alone.
+                        if (IslandBus.bigScreen) ed.putFloat("main_cam_x_pct", x / screenWdp * 100f).putFloat("main_cam_y_dp", y)
+                        else ed.putString("cam_pos", "custom")
                             .putFloat("cam_x_pct", x / screenWdp * 100f)
                             .putBoolean("cam_y_on", true)
                             .putFloat("cam_y_dp", y)
-                            .putFloat("island_h", size)
-                            .apply()
+                        ed.putFloat("island_h", size).apply()
                         IslandBus.camVersion++
                         // A short pause first, so the button's press animation can finish.
                         handler.postDelayed({ IslandBus.introNext = true; stopCameraEdit(); rebuild() }, CLOSE_PAUSE_MS)
@@ -764,3 +789,9 @@ class IslandOverlay(private val context: Context, private val windowType: Int) {
                     WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
     }
 }
+
+/** Where the Fold's main screen camera is (measured on the phone): percent of the screen's width, and dp from the top. */
+private const val MAIN_CAM_X_PCT = 76.05f
+private const val MAIN_CAM_Y_DP = 24.6f
+/** The main screen's camera is bigger than the cover screen's: content keeps this much room clear around it (dp). */
+private const val MAIN_CAM_D = 40f

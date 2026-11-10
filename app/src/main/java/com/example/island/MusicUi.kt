@@ -106,7 +106,7 @@ internal fun MusicOpen() {
         IslandBus.mediaPosTime = SystemClock.elapsedRealtime()
     }
 
-    Column(Modifier.fillMaxSize().padding(start = 22.dp, end = 22.dp, top = 18.dp, bottom = 10.dp)) {
+    Column(Modifier.fillMaxSize().padding(start = 22.dp, end = 22.dp, top = 18.dp + musicDrop(IslandBus.camGap - 16.dp), bottom = 10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Art(Modifier.size(58.dp), 13.dp)
             Spacer(Modifier.width(14.dp))

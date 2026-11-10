@@ -123,6 +123,9 @@ enum class IslandState {
     Idle, Charging, ChargingOpen, Timer, TimerOpen, Call, CallOpen, Music, MusicOpen, Nav, NavOpen, Alert, Device, Torch, TorchOpen;
 
     /** Whether the island needs the large overlay window. */
+    /** The small expanded pop-ups that share one layout ([InfoOpen]). */
+    fun isCard(): Boolean = this == ChargingOpen || this == Device || this == TorchOpen ||
+            (this == CallOpen && IslandBus.callIncoming)
     fun isTall(): Boolean = this == ChargingOpen || this == TimerOpen || this == MusicOpen || this == CallOpen || this == NavOpen || this == Device || this == TorchOpen
 
     fun tapped(): IslandState = when (this) {
@@ -328,6 +331,12 @@ object IslandBus {
     var autoCamY by androidx.compose.runtime.mutableFloatStateOf(0f)
     /** The screen's own corner radius in dp, as Android reports it (0 when the screen has square corners or says nothing). */
     var screenCorner by androidx.compose.runtime.mutableFloatStateOf(0f)
+    /** True on the unfolded main screen. */
+    var bigScreen by androidx.compose.runtime.mutableStateOf(false)
+    /** On the main screen, how wide an expanded island is (the cover screen's width); 0 = fill the screen. */
+    var openW = 0f
+    /** A wide screen (shorter than about 19:10, like the Fold's cover screen): expanded views stop at [OPEN_WIDE_W]. */
+    var wideScreen by androidx.compose.runtime.mutableStateOf(false)
     /** True: an expanded island's corners match the screen's. False: they use [cornerCustom] (the "corners" setting). */
     var cornerAuto by mutableStateOf(true)
     var cornerCustom by androidx.compose.runtime.mutableFloatStateOf(OPEN_CORNER.value)
@@ -890,7 +899,16 @@ const val IDLE_AFTER_MS = 1500L
  * The camera hole as a circle: [centerX] is measured from the screen's left edge, [centerY] from the screen's top,
  * [diameter] is the visible hole. [real] is false when Android reports no cutout.
  */
-data class Hole(val centerX: Dp, val centerY: Dp, val diameter: Dp, val real: Boolean, val screenW: Dp = 0.dp)
+data class Hole(val centerX: Dp, val centerY: Dp, val diameter: Dp, val real: Boolean, val screenW: Dp = 0.dp, val clear: Dp = 0.dp) {
+    /** How much room content keeps clear around the camera ([clear] when set, as on the main screen, else the hole). */
+    val clearD: Dp get() = if (clear > 0.dp) clear else diameter
+}
+
+/**
+ * How far the expanded music player's top row moves down so a camera bigger than the cover screen's (about 30 dp)
+ * does not cover the song title.
+ */
+internal fun musicDrop(camD: Dp): Dp = ((camD - 30.dp) / 2).coerceAtLeast(0.dp)
 
 /** The island's size, never wider than the screen (with a little room at each side). */
 /**
@@ -906,11 +924,25 @@ const val ISLAND_H_MAX = 56f
 /** The widest an expanded island gets, for screens much wider than a phone's. */
 internal const val OPEN_MAX_W = 600f
 
+/** On a wide screen (the Fold's cover screen) an expanded island is about as wide as on a regular phone, not full width. */
+internal const val OPEN_WIDE_W = 400f
+
+/** How wide the small pop-ups are. */
+internal const val CARD_W = 350f
+
+/** How wide an expanded island is on a screen [screenW] dp wide, keeping [gap] dp from each side. */
+internal fun openWidthFor(screenW: Float, gap: Float): Float =
+    minOf(screenW - 2 * gap, OPEN_MAX_W, if (IslandBus.wideScreen) OPEN_WIDE_W else Float.MAX_VALUE)
+
 private fun IslandState.dims(hole: Hole): DpSize {
     var d = rawDims(hole)
     // An expanded island fills the screen's width less the same gap it has at the top.
     if (isTall() && hole.screenW.value > 0f) {
-        return DpSize(minOf(hole.screenW.value - 2 * hole.edgeGap(), OPEN_MAX_W).dp, d.height)
+        val full = openWidthFor(hole.screenW.value, hole.edgeGap())
+        val open = if (IslandBus.openW > 0f) minOf(IslandBus.openW, full) else full
+        // The small pop-ups (charging, battery, Bluetooth, flashlight, an incoming call) are 350 dp wide.
+        if (isCard()) return DpSize(minOf(CARD_W, open).dp, d.height)
+        return DpSize(open.dp, d.height)
     }
     // The camera's dots take room next to the camera: a compact island grows by that much.
     if (this != IslandState.Idle && !isTall()) d = DpSize(d.width + IslandBus.dotsReach.dp, d.height)
@@ -951,7 +983,7 @@ private fun IslandState.rawDims(hole: Hole): DpSize = when (this) {
     IslandState.MusicOpen -> {
         // Halfway between the old fixed width (340 dp) and almost the full screen width.
         val wide = (hole.screenW - 28.dp).coerceIn(340.dp, 480.dp)
-        DpSize((340.dp + wide) / 2, 164.dp)
+        DpSize((340.dp + wide) / 2, 164.dp + musicDrop(if (hole.real) hole.clearD else 24.dp))
     }
     IslandState.ChargingOpen -> DpSize(350.dp, 84.dp)
     IslandState.TimerOpen -> DpSize(340.dp, 104.dp)
@@ -1467,7 +1499,7 @@ fun Island(
 ) {
     // Split: the main pill hugs the camera (its content on the left, the camera at its right end), and the second
     // activity is a small separate pill on the right. So it reads as two items, not three.
-    val camD = if (hole.real) hole.diameter else 24.dp
+    val camD = if (hole.real) hole.clearD else 24.dp
     IslandBus.camGap = camD + 16.dp
     val camX = hole.centerX.value
     val screenWv = hole.screenW.value
@@ -2208,6 +2240,6 @@ private fun ChargingOpen() {
         subtitle = fullIn(IslandBus.minutesToFull, IslandBus.batteryPercent),
         subtitleColor = Gray,
         icon = { BatteryIcon(IslandBus.batteryPercent, Modifier.size(34.dp, 16.dp)) },
-        trailing = { Text("${IslandBus.batteryPercent}%", color = Green, fontSize = 24.sp, fontWeight = FontWeight.Bold) },
+        trailing = { Text("${IslandBus.batteryPercent}%", color = Green, fontSize = 24.sp, fontWeight = FontWeight.Bold, maxLines = 1) },
     )
 }

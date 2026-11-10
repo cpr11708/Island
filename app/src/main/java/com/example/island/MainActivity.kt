@@ -550,34 +550,47 @@ private fun PositionAndShape(context: Context) {
     val islandX = androidx.compose.animation.core.animateFloatAsState(camX, label = "preview spot").value
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        IslandPreview(
-            screenW = screenW, screenCorner = screenCorner, camX = islandX, camY = camY, compactH = compactH, gap = edgeGap,
-            corner = corners, spots = spots.map { it.third }, chosen = spots.indexOfFirst { it.first == mode },
-            compact = showCompact,
-            onTap = { x -> choose(spots.minBy { kotlin.math.abs(it.third - x) }.first) },
-        )
-        Text(
-            when (mode) {
-                "auto" -> "Auto: the island sits over your phone's own camera. Tap a spot above to move it somewhere else."
-                "custom" -> "Custom: you set exactly where the camera is."
-                else -> "${spots.first { it.first == mode }.second}. Tap another spot to move it, or pick Auto or Custom."
-            },
-            color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp,
-        )
-        Segmented(
-            options = listOf("Auto", spots.firstOrNull { it.first == mode }?.second ?: "Spot", "Custom"),
-            selected = when (mode) { "auto" -> 0; "custom" -> 2; else -> 1 },
-        ) { i ->
-            when (i) {
-                0 -> choose("auto")
-                1 -> if (mode == "auto" || mode == "custom") choose("center")
-                else -> choose("custom")
-            }
-        }
-        if (mode == "custom") {
+        if (IslandBus.bigScreen) {
+            // The main screen has its own camera spot; the choices below are for the cover screen.
+            Text(
+                "You're on the main screen. Its camera isn't reported by the phone, so place the island over it by hand. " +
+                        "This doesn't change the cover screen's position (fold the phone to set that one).",
+                color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp,
+            )
             OutlinedButton(onClick = { IslandBus.startCameraEdit?.invoke() }, modifier = Modifier.fillMaxWidth()) {
-                Text("Edit position")
+                Text("Edit main screen position")
             }
+        } else {
+            IslandPreview(
+                screenW = screenW, screenCorner = screenCorner, camX = islandX, camY = camY, compactH = compactH, gap = edgeGap,
+                corner = corners, spots = spots.map { it.third }, chosen = spots.indexOfFirst { it.first == mode },
+                compact = showCompact,
+                onTap = { x -> choose(spots.minBy { kotlin.math.abs(it.third - x) }.first) },
+            )
+            Text(
+                when (mode) {
+                    "auto" -> "Auto: the island sits over your phone's own camera. Tap a spot above to move it somewhere else."
+                    "custom" -> "Custom: you set exactly where the camera is."
+                    else -> "${spots.first { it.first == mode }.second}. Tap another spot to move it, or pick Auto or Custom."
+                },
+                color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp,
+            )
+            Segmented(
+                options = listOf("Auto", spots.firstOrNull { it.first == mode }?.second ?: "Spot", "Custom"),
+                selected = when (mode) { "auto" -> 0; "custom" -> 2; else -> 1 },
+            ) { i ->
+                when (i) {
+                    0 -> choose("auto")
+                    1 -> if (mode == "auto" || mode == "custom") choose("center")
+                    else -> choose("custom")
+                }
+            }
+            if (mode == "custom") {
+                OutlinedButton(onClick = { IslandBus.startCameraEdit?.invoke() }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Edit position")
+                }
+            }
+
         }
 
         Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)))
@@ -654,7 +667,7 @@ private fun IslandPreview(
     spots: List<Float>, chosen: Int, compact: Boolean = false, onTap: (Float) -> Unit,
 ) {
     // A representative expanded island (about the size of the music player), [gap] dp in from the top and the sides.
-    val islandW = minOf(OPEN_MAX_W, screenW - 2 * gap)
+    val islandW = openWidthFor(screenW, gap)
     val islandH = 130f
     val top = (camY - compactH / 2f).coerceAtLeast(0f)
     // (When the island fills the width the two limits are the same, give or take a rounding error: never let them cross.)
