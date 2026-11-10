@@ -63,7 +63,7 @@ internal fun NavCompact() {
         right = {
             Text(
                 IslandBus.navDistance.ifEmpty { IslandBus.navTitle.take(9) },
-                color = NavBlue, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
+                color = NavBlue, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false,
             )
         },
     )
@@ -94,9 +94,12 @@ internal fun NavOpenContent() {
             NavIcon(Modifier.size(44.dp))
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
+                val big = distance.ifEmpty { IslandBus.navTitle }
                 Text(
-                    distance.ifEmpty { IslandBus.navTitle },
-                    color = Color.White, fontSize = 30.sp, fontWeight = FontWeight.Bold, maxLines = 1,
+                    big,
+                    // A long distance (or a street name standing in for one) gets smaller instead of being cut off.
+                    color = Color.White, fontSize = if (big.length <= 8) 30.sp else if (big.length <= 14) 24.sp else 19.sp,
+                    fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
                 Text(instruction, color = Color.White, fontSize = 15.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
             }

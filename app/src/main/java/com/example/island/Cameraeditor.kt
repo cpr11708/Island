@@ -96,7 +96,7 @@ fun CameraEditor(
             last = now
             val s = stick
             if (s != Offset.Zero) {
-                x = (x + s.x * 110f * dt).coerceIn(14f, screenW - 14f)
+                x = (x + s.x * 110f * dt).coerceIn(diameter / 2f, screenW - diameter / 2f)
                 y = (y + s.y * 80f * dt).coerceIn(8f, CAM_MAX_Y)
             }
         }
@@ -108,7 +108,7 @@ fun CameraEditor(
             Modifier.fillMaxSize().graphicsLayer { alpha = 1f - out }.background(Color(0x73000000)).pointerInput(Unit) {
                 detectDragGestures { change, drag ->
                     change.consume()
-                    x = (x + drag.x / density).coerceIn(14f, screenW - 14f)
+                    x = (x + drag.x / density).coerceIn(diameter / 2f, screenW - diameter / 2f)
                     y = (y + drag.y / density).coerceIn(8f, CAM_MAX_Y)
                 }
             },
@@ -150,7 +150,7 @@ fun CameraEditor(
                 Spacer(Modifier.width(16.dp))
                 Joystick(onStick = { stick = it })
             }
-            EditSlider("Across", "${(x / screenW * 100).roundToInt()}%", x, 0f, screenW) { x = it.coerceIn(14f, screenW - 14f) }
+            EditSlider("Across", "${(x / screenW * 100).roundToInt()}%", x, 0f, screenW) { x = it.coerceIn(diameter / 2f, screenW - diameter / 2f) }
             EditSlider("Down", "${y.roundToInt()} dp", y, 8f, CAM_MAX_Y) { y = it }
             EditSlider("Island height", "${size.roundToInt()} dp", size, 28f, 46f) { size = it; onSizeLive(it) }
         }

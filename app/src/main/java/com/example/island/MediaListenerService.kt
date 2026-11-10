@@ -93,6 +93,9 @@ class MediaListenerService : NotificationListenerService() {
         return (isCallCategory || hasCallStyle) && ongoing && (isCallCategory || fromDialer || hasCallStyle)
     }
 
+    @Suppress("DEPRECATION") // the replacement needs Android 13, and the app still supports 12
+    private fun callIntent(ex: Bundle, key: String): PendingIntent? = ex.getParcelable(key) as? PendingIntent
+
     private fun checkCalls() {
         val all = try { activeNotifications } catch (_: SecurityException) { null } ?: return
         IslandBus.callDebug = all
@@ -152,17 +155,32 @@ class MediaListenerService : NotificationListenerService() {
         IslandBus.callTimeDebug = "used=$usedSource | posted ${(now - sbn.postTime) / 1000}s ago, when ${(now - n.`when`) / 1000}s ago, chronometer=$chrono, type=$type"
 
         val wanted = Regex("answer|accept|decline|reject|hang|end", RegexOption.IGNORE_CASE)
-        val actions = (n.actions ?: emptyArray())
-            .filter { it.actionIntent != null && !it.title.isNullOrBlank() }
-            .let { list -> list.filter { wanted.containsMatchIn(it.title) }.ifEmpty { list } }
-            .take(2)
-            .map { a ->
-                CallAction(
-                    label = a.title.toString(),
-                    accept = Regex("answer|accept", RegexOption.IGNORE_CASE).containsMatchIn(a.title),
-                    intent = a.actionIntent,
-                )
-            }
+        val acceptWord = Regex("answer|accept", RegexOption.IGNORE_CASE)
+        val declineWord = Regex("decline|reject", RegexOption.IGNORE_CASE)
+        val usable = (n.actions ?: emptyArray()).filter { it.actionIntent != null && !it.title.isNullOrBlank() }
+        val toCallAction = { a: Notification.Action ->
+            CallAction(a.title.toString(), acceptWord.containsMatchIn(a.title), a.actionIntent)
+        }
+        val actions = if (incoming) {
+            // Ringing always offers both choices. Call apps differ here: Android's call style keeps Answer and Decline
+            // in separate extras, and other apps add more buttons (or use their own wording for Answer).
+            val otherButton = usable.firstOrNull { !declineWord.containsMatchIn(it.title) && !Regex("mute|message", RegexOption.IGNORE_CASE).containsMatchIn(it.title) }
+            val answerIntent = usable.firstOrNull { acceptWord.containsMatchIn(it.title) }?.actionIntent
+                ?: callIntent(ex, "android.answerIntent")
+                ?: otherButton?.actionIntent
+                ?: n.fullScreenIntent
+                ?: n.contentIntent
+            val declineIntent = usable.firstOrNull { declineWord.containsMatchIn(it.title) }?.actionIntent
+                ?: callIntent(ex, "android.declineIntent")
+            listOfNotNull(
+                declineIntent?.let { CallAction("Decline", false, it) },
+                answerIntent?.let { CallAction("Answer", true, it) },
+            )
+        } else {
+            val named = usable.filter { wanted.containsMatchIn(it.title) }
+            val shown = named.ifEmpty { usable }.take(2).map(toCallAction)
+            shown.ifEmpty { listOfNotNull(callIntent(ex, "android.hangUpIntent")?.let { CallAction("Hang up", false, it) }) }
+        }
 
         val wasIncoming = IslandBus.callIncoming
         val isNewCall = IslandBus.callKey != sbn.key
@@ -204,10 +222,41 @@ class MediaListenerService : NotificationListenerService() {
                 (ex.getCharSequence(Notification.EXTRA_TEXT) ?: "")).lowercase()
         // A Clock notification with a running chronometer is a timer or a stopwatch even if its words are unexpected.
         return "stopwatch" in words || "timer" in words || ex.getBoolean("android.chronometerCountDown") ||
-                ex.getBoolean(Notification.EXTRA_SHOW_CHRONOMETER)
+                ex.getBoolean(Notification.EXTRA_SHOW_CHRONOMETER) || readMetrics(sbn.notification).isNotEmpty()
     }
 
+    /**
+     * One entry of Android 17's "metric" notification style, which Google's Clock uses: no title, text or chronometer,
+     * just a list of labelled clocks. [zeroElapsed] is the moment (elapsedRealtime) a countdown reaches zero, or a
+     * count-up started; a paused one has [pausedMs] instead.
+     */
+    private class Metric(val label: String, val zeroElapsed: Long?, val countDown: Boolean, val pausedMs: Long?)
+
+    private fun readMetrics(n: Notification): List<Metric> {
+        @Suppress("DEPRECATION")
+        val list = n.extras.get("android.metrics") as? List<*> ?: return emptyList()
+        return list.mapNotNull { item ->
+            val b = item as? Bundle ?: return@mapNotNull null
+            @Suppress("DEPRECATION")
+            val v = b.get("value") as? Bundle ?: return@mapNotNull null
+            @Suppress("DEPRECATION")
+            fun num(k: String) = (v.get(k) as? Number)?.toLong()
+            Metric(
+                label = b.getCharSequence("label")?.toString().orEmpty(),
+                zeroElapsed = num("zeroElapsedRealtime"),
+                countDown = v.getBoolean("countDown", true),
+                pausedMs = num("pausedDuration"),
+            ).takeIf { it.zeroElapsed != null || it.pausedMs != null }
+        }
+    }
+
+    /** The clock to show from a metric notification: a running one before a paused one, the soonest to finish first. */
+    private fun mainMetric(n: Notification): Metric? = readMetrics(n)
+        .sortedWith(compareBy<Metric>({ it.pausedMs != null }, { if (it.countDown) it.zeroElapsed ?: Long.MAX_VALUE else 0L }))
+        .firstOrNull()
+
     private fun isStopwatch(sbn: StatusBarNotification): Boolean {
+        mainMetric(sbn.notification)?.let { return !it.countDown }
         val ex = sbn.notification.extras
         val words = ((ex.getCharSequence(Notification.EXTRA_TITLE) ?: "").toString() + " " +
                 (ex.getCharSequence(Notification.EXTRA_TEXT) ?: "")).lowercase()
@@ -306,9 +355,22 @@ class MediaListenerService : NotificationListenerService() {
                 if (lengthMs > 0 && Math.abs(exact - (goesOff + 30_000)) <= 60_000) exact else goesOff + 30_000
             }
         val isSw = isStopwatch(sbn)
+        val metric = mainMetric(n)
         IslandBus.timerStopwatch = isSw
-        IslandBus.timerFromNotification = ongoingMs != null || endFromText != null
-        if (isSw) {
+        IslandBus.timerFromNotification = ongoingMs != null || endFromText != null || metric != null
+        if (metric != null) {
+            // Google's Clock on Android 17: exact times, nothing to guess.
+            val sinceZero = SystemClock.elapsedRealtime() - (metric.zeroElapsed ?: 0L)
+            if (metric.pausedMs != null) {
+                IslandBus.timerPausedMs = metric.pausedMs
+                IslandBus.timerPaused = true
+            } else {
+                // The zero moment on the wall clock: when a countdown ends, or when a stopwatch started (see timerRemainingMs).
+                IslandBus.timerEndMs = now - sinceZero
+                IslandBus.timerPaused = false
+            }
+            IslandBus.timerKnown = true
+        } else if (isSw) {
             // A stopwatch counts up: the island remembers the moment it started.
             val paused = ongoingActions.any { it.label.contains("resume", true) || it.label.contains("start", true) } ||
                     (n.actions?.any { a -> a.title?.toString()?.let { t -> t.contains("resume", true) || t.contains("start", true) } == true } == true)
@@ -400,7 +462,7 @@ class MediaListenerService : NotificationListenerService() {
         IslandBus.timerReal = true
         IslandBus.timerKey = sbn.key
         IslandBus.timerPackage = sbn.packageName
-        IslandBus.timerLabel = if (isSw) "Stopwatch" else title.ifEmpty { "Timer" }
+        IslandBus.timerLabel = if (isSw) "Stopwatch" else title.ifEmpty { metric?.label?.takeIf { it.isNotBlank() } ?: "Timer" }
 
         if (IslandBus.timerDismissedKey == sbn.key) return // swiped away: stays hidden for this timer
         if (IslandBus.hiddenByApp(IslandState.Timer)) return // inside the Clock: nothing changes
@@ -409,8 +471,8 @@ class MediaListenerService : NotificationListenerService() {
         // Priority: call > music > timer, so a timer never takes over a call or music (it shows beside them).
         val busy = s == IslandState.Call || s == IslandState.CallOpen || s == IslandState.Music || s == IslandState.MusicOpen
         val showing = s == IslandState.Timer || s == IslandState.TimerOpen
-        // An expanded battery or device pop-up only borrows the island for a moment and hands it back itself, so routine updates wait.
-        val borrowed = s == IslandState.Device && IslandBus.autoIdle
+        // A pop-up only borrows the island for a moment and hands it back itself, so routine updates wait.
+        val borrowed = (s == IslandState.Device || s == IslandState.Alert) && IslandBus.autoIdle
         if (!busy && (isNew || (!showing && !borrowed))) {
             IslandBus.autoIdle = false
             IslandBus.state = IslandState.Timer
@@ -587,6 +649,11 @@ class MediaListenerService : NotificationListenerService() {
 
     private fun callEnded() {
         if (!IslandBus.callReal) return // the demo button's call is not ours to clear
+        if (IslandBus.micMutedByIsland) {
+            // The microphone switch is system-wide: never leave it off after the call.
+            runCatching { getSystemService(android.media.AudioManager::class.java).isMicrophoneMute = false }
+            IslandBus.micMutedByIsland = false
+        }
         if (!IslandBus.callIncoming && IslandBus.callStartMs > 0L) {
             IslandBus.lastCallStart = IslandBus.callStartMs
             IslandBus.lastCallName = IslandBus.callName

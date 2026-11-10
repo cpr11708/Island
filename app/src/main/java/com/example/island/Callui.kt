@@ -142,10 +142,9 @@ internal fun CallOpenContent() {
         val audio = remember { context.getSystemService(AudioManager::class.java) }
         var muted by remember { mutableStateOf(runCatching { audio.isMicrophoneMute }.getOrDefault(false)) }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            // Mute only makes sense once the call is connected, and only where it can work: the phone app (the system
-            // microphone switch) or an app that has its own Mute button in its notification.
-            val canMute = IslandBus.callMuteIntent != null || IslandBus.isPhoneApp(IslandBus.callPackage) || !IslandBus.callReal
-            if (!IslandBus.callIncoming && canMute) {
+            // Mute only makes sense once the call is connected. It uses the app's own Mute button if its notification has
+            // one, otherwise the system microphone switch (WhatsApp's notification only offers Hang Up).
+            if (!IslandBus.callIncoming) {
                 val muteSource = remember { MutableInteractionSource() }
                 Box(
                     Modifier.weight(1f).height(44.dp).pressScale(muteSource).clip(CircleShape)
@@ -161,6 +160,7 @@ internal fun CallOpenContent() {
                             } else {
                                 runCatching { audio.isMicrophoneMute = !muted }
                                 muted = runCatching { audio.isMicrophoneMute }.getOrDefault(!muted)
+                                IslandBus.micMutedByIsland = muted
                             }
                         },
                     contentAlignment = Alignment.Center,

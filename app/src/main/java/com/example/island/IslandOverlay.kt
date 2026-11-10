@@ -155,6 +155,7 @@ class IslandOverlay(private val context: Context, private val windowType: Int) {
         autoHole = hole0
         // The island's height only applies when the position is Custom.
         IslandBus.compactH = if (camPrefs.getString("cam_pos", "auto") == "custom") camPrefs.getFloat("island_h", 36f) else 36f
+        IslandBus.sideGap = if (camPrefs.getString("cam_pos", "auto") == "custom") 0f else 8f
         // The main window is as wide as the screen (but no wider than the widest island plus its touch margin).
         val tallWidthDp = (screenW / density).coerceIn(380f, 508f)
         val camXpx = hole.centerX.value * density
@@ -215,6 +216,7 @@ class IslandOverlay(private val context: Context, private val windowType: Int) {
                 hole = hole,
                 xShift = shiftForMain.dp,
                 onRestoreWanted = { on -> onRestoreWanted(on) },
+                onIslandBounds = { r -> fitPad(r, camXpx) },
             ) { touchable, tall -> onLayoutWanted(touchable, tall) }
         }
         // The touch windows follow the camera. Both stay on the screen: near an edge they slide inward, and the
@@ -447,6 +449,42 @@ class IslandOverlay(private val context: Context, private val windowType: Int) {
         }
     }
 
+    private var padRect: androidx.compose.ui.geometry.Rect? = null
+    private var padCamX = 0f
+    private val padFit = Runnable { applyPadFit() }
+
+    /**
+     * The compact island's touch pad covers the island (plus its touch margin) and nothing more, so the search bar or
+     * text field of an app just below it can still be tapped. [r] is the island's touch box inside the main window.
+     * It waits until the island has stopped changing shape, so the window is not resized on every animation frame.
+     */
+    private fun fitPad(r: androidx.compose.ui.geometry.Rect, camXpx: Float) {
+        if (r.width < 4f || r.height < 4f) return
+        padRect = r
+        padCamX = camXpx
+        lockHideHandler.removeCallbacks(padFit)
+        lockHideHandler.postDelayed(padFit, 120L)
+    }
+
+    private fun applyPadFit() {
+        val r = padRect ?: return
+        val v = padView ?: return
+        val lp = padParams ?: return
+        val main = mainParams ?: return
+        val left = (main.x + r.left).toInt().coerceAtLeast(0)
+        val right = (main.x + r.right).toInt().coerceAtMost(screenSize.width())
+        val w = (right - left).coerceAtLeast(1)
+        val h = r.bottom.toInt().coerceAtLeast(1)
+        if (Math.abs(lp.x - left) < 2 && Math.abs(lp.width - w) < 2 && Math.abs(lp.height - h) < 2) return
+        lp.x = left
+        lp.y = 0
+        lp.width = w
+        lp.height = h
+        // The pad's gestures need to know where its middle is, in dp from the camera.
+        IslandBus.padCentre = (left + w / 2f - padCamX) / context.resources.displayMetrics.density
+        runCatching { windowManager.updateViewLayout(v, lp) }
+    }
+
     private var lockSmall: Boolean? = null
     private var lockAnim: android.animation.ValueAnimator? = null
 
@@ -668,6 +706,8 @@ class IslandOverlay(private val context: Context, private val windowType: Int) {
 
     private fun hideIsland() {
         stopCameraEdit()
+        lockHideHandler.removeCallbacks(padFit)
+        padRect = null
         lockHideHandler.removeCallbacks(lockHide)
         lockSlide?.cancel()
         lockSlid = false

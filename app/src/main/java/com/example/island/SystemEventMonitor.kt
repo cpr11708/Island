@@ -148,6 +148,7 @@ class SystemEventMonitor(private val context: Context) {
         IslandBus.privacyEnabled = context.getSharedPreferences("island", Context.MODE_PRIVATE).getBoolean("privacy_dots", true)
         IslandBus.lockPlayer = context.getSharedPreferences("island", Context.MODE_PRIVATE).getBoolean("lock_player", false)
         IslandBus.statusPills = context.getSharedPreferences("island", Context.MODE_PRIVATE).getBoolean("status_pills", false)
+        IslandBus.edgeOutline = context.getSharedPreferences("island", Context.MODE_PRIVATE).getBoolean("island_outline", true)
         torchIgnoreUntil = SystemClock.elapsedRealtime() + 1500
         IslandBus.torchSwitch = { on -> torchId?.let { id -> context.getSystemService(CameraManager::class.java).setTorchMode(id, on) } }
         runCatching {

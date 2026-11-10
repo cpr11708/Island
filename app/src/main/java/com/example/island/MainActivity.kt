@@ -14,6 +14,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -157,35 +158,79 @@ private fun SetupScreen() {
         Heading("Setup")
         Card {
             Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
-                Step(
-                    done = islandReady,
-                    title = "Show the island",
-                    text = if (a11yOn) "On, using Accessibility. You can touch the island in every app."
-                    else "Turn on Island under Accessibility, in Installed apps. That lets you touch it in every app.",
-                    button = if (a11yOn) null else "Open Accessibility",
-                ) { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
-                if (!a11yOn) {
-                    if (!canOverlay) {
-                        Step(
-                            done = false,
-                            title = "Or: basic overlay",
-                            text = "A simpler option. Touches near the top of some apps will not reach it.",
-                            button = "Allow overlay",
+                if (a11yOn) {
+                    Step(
+                        done = true,
+                        title = "Show the island",
+                        text = "On, using Accessibility. You can touch the island in every app.",
+                        button = null,
+                    ) { }
+                } else {
+                    // Two ways to show the island: only one is needed, so they sit together in their own box.
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("Show the island: pick one", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                        Column(
+                            Modifier.fillMaxWidth()
+                                .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f), RoundedCornerShape(16.dp))
+                                .padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
-                            context.startActivity(
-                                Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${context.packageName}")),
-                            )
+                            Step(
+                                done = false,
+                                title = "Accessibility (recommended)",
+                                text = "Turn on Island under Accessibility, in Installed apps. That lets you touch it in every app.",
+                                button = "Open Accessibility",
+                            ) { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(Modifier.weight(1f).height(1.dp).background(MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)))
+                                Text("  or  ", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                                Box(Modifier.weight(1f).height(1.dp).background(MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)))
+                            }
+                            if (!canOverlay) {
+                                Step(
+                                    done = false,
+                                    title = "Basic overlay",
+                                    text = "A simpler option. Touches near the top of some apps will not reach it.",
+                                    button = "Allow overlay",
+                                ) {
+                                    context.startActivity(
+                                        Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${context.packageName}")),
+                                    )
+                                }
+                            } else {
+                                Step(
+                                    done = true,
+                                    title = "Basic overlay allowed",
+                                    text = "Start it here if you are not using Accessibility.",
+                                    button = "Start island",
+                                ) {
+                                    if (Build.VERSION.SDK_INT >= 33) notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                    context.startForegroundService(Intent(context, IslandService::class.java))
+                                }
+                            }
                         }
-                    } else {
-                        Step(
-                            done = true,
-                            title = "Basic overlay allowed",
-                            text = "Start it here if you are not using Accessibility.",
-                            button = "Start island",
-                        ) {
-                            if (Build.VERSION.SDK_INT >= 33) notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-                            context.startForegroundService(Intent(context, IslandService::class.java))
-                        }
+                    }
+                }
+                if (!a11yOn || !listenerOn) {
+                    // Android blocks these two switches for apps installed from a file until this is allowed.
+                    Column(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Warn.copy(alpha = 0.14f)).padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text("Switch greyed out?", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                        Text(
+                            "Android blocks Accessibility and Notification access for apps installed from a file. Open Island's " +
+                                    "App info, tap the three dots at the top right (or More), and choose \"Allow restricted settings\". " +
+                                    "Then come back and try again.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp,
+                        )
+                        OutlinedButton(onClick = {
+                            runCatching {
+                                context.startActivity(
+                                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}")),
+                                )
+                            }
+                        }) { Text("Open App info") }
                     }
                 }
                 Step(
@@ -218,13 +263,6 @@ private fun SetupScreen() {
                 ) { btPermission.launch(Manifest.permission.BLUETOOTH_CONNECT) }
             }
         }
-        if (!a11yOn || !listenerOn) {
-            Text(
-                "A switch greyed out? Open Island's App info, tap the three dots at the top right, and choose " +
-                        "\"Allow restricted settings\". Then try again.",
-                color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp,
-            )
-        }
 
         // ---- Features
         Heading("Features")
@@ -232,6 +270,7 @@ private fun SetupScreen() {
             Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 PrefSwitch(context, "Camera and microphone dots", "A green or orange dot beside the camera while one is in use.", "privacy_dots", IslandBus.privacyEnabled) { IslandBus.privacyEnabled = it }
                 PrefSwitch(context, "Recording and hotspot dots", "Red while the screen is recorded, green while the hotspot is on.", "status_pills", IslandBus.statusPills) { IslandBus.statusPills = it }
+                PrefSwitch(context, "Outline", "A faint grey edge around the island while it shows something, so it stays visible on black screens.", "island_outline", IslandBus.edgeOutline) { IslandBus.edgeOutline = it }
                 PrefSwitch(context, "Music on the lock screen", "A music player near the bottom while locked and playing.", "lock_player", IslandBus.lockPlayer) { IslandBus.lockPlayer = it }
                 Text(
                     "Touch and hold the lock screen player, then drag, to move it. Tap the handle at its top, or swipe it down, to shrink it.",
@@ -296,6 +335,26 @@ private fun SetupScreen() {
                             context.startActivity(Intent(a).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                         }.isSuccess
                         if (ok) return
+                    }
+                }
+                // Android never lets one app switch off another app's pop-ups, so each button goes straight to that
+                // app's own notification page, where its "Pop on screen" (or "Pop-up") switch is.
+                val apps = remember { doubledApps(context) }
+                if (apps.isNotEmpty()) {
+                    Text(
+                        "Turn off pop-ups (and on Android 16 or later, \"Live updates\", the chip in the status bar) for the apps the island already shows. Android only allows this from each app's own page:",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp,
+                    )
+                    apps.forEach { (label, pkg) ->
+                        TextButton(onClick = {
+                            runCatching {
+                                context.startActivity(
+                                    Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                                        .putExtra(Settings.EXTRA_APP_PACKAGE, pkg)
+                                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                                )
+                            }
+                        }) { Text("$label notifications") }
                     }
                 }
                 TextButton(onClick = { open("com.samsung.android.settings.lockscreen.NOW_BAR", "android.settings.LOCK_SCREEN_SETTINGS", Settings.ACTION_SETTINGS) }) {
@@ -469,6 +528,20 @@ private fun PrefSwitch(context: Context, title: String, text: String, key: Strin
             },
         )
     }
+}
+
+/** The installed apps whose pop-ups repeat what the island shows: the phone app, WhatsApp, Maps and the Clock. */
+private fun doubledApps(context: Context): List<Pair<String, String>> {
+    val pm = context.packageManager
+    fun installed(pkg: String) = runCatching { pm.getPackageInfo(pkg, 0) }.isSuccess
+    val dialer = runCatching { context.getSystemService(android.telecom.TelecomManager::class.java).defaultDialerPackage }.getOrNull()
+    return listOfNotNull(
+        dialer?.let { "Phone" to it },
+        "WhatsApp" to "com.whatsapp",
+        "Google Maps" to "com.google.android.apps.maps",
+        "Clock" to "com.google.android.deskclock",
+        "Clock" to "com.sec.android.app.clockpackage",
+    ).filter { installed(it.second) }.distinctBy { it.second }
 }
 
 private fun has(context: Context, permission: String): Boolean =

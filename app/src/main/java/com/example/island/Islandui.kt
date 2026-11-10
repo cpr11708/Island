@@ -106,6 +106,9 @@ val OPEN_CORNER = 40.dp
 /** Extra touch area around the island on every side. */
 val TOUCH_PAD = 14.dp
 
+/** The faint edge drawn around a showing island (see [IslandBus.edgeOutline]). */
+private val EdgeColor = Color(0xFF3A3A3C)
+
 /** How long to hold a finger on the island before it opens or closes. */
 const val HOLD_MS = 450L
 
@@ -403,8 +406,14 @@ object IslandBus {
         if (!state.isTall()) state = r
     }
 
-    /** The user's switch (in the app) for the dots. Off by default. */
+    /** The user's switch (in the app) for the dots. On by default. */
     var privacyEnabled by mutableStateOf(true)
+
+    /** How close (dp) the island may come to the screen's sides: 8 normally, 0 for a Custom position (like the top). */
+    var sideGap = 8f
+
+    /** A faint edge around a showing island, so it can still be seen against a black screen. On by default. */
+    var edgeOutline by mutableStateOf(true)
     var camActive by mutableStateOf(false)
     var micActive by mutableStateOf(false)
     /** Screen recording, and hotspot / tethering (from a broadcast, or from the phone's own notification). */
@@ -598,6 +607,9 @@ object IslandBus {
 
     /** The notification's own Mute button, for call apps that have one (WhatsApp, say). */
     var callMuteIntent: android.app.PendingIntent? = null
+
+    /** True while the island's Mute has the system microphone off, so it can be turned back on when the call ends. */
+    var micMutedByIsland = false
 
     /**
      * Answer / hang up. For the phone app the system call is used directly (needs the "answer calls" permission), because
@@ -846,7 +858,7 @@ private fun IslandState.dims(hole: Hole): DpSize {
     var d = rawDims(hole)
     // The camera's dots take room next to the camera: a compact island grows by that much.
     if (this != IslandState.Idle && !isTall()) d = DpSize(d.width + IslandBus.dotsReach.dp, d.height)
-    return if (hole.screenW.value > 0f && this != IslandState.Idle) DpSize(minOf(d.width, hole.screenW - 16.dp), d.height) else d
+    return if (hole.screenW.value > 0f && this != IslandState.Idle) DpSize(minOf(d.width, hole.screenW - (IslandBus.sideGap * 2).dp), d.height) else d
 }
 
 /** Roughly how wide one character of the compact pills' 14 sp text is, in dp. */
@@ -860,7 +872,7 @@ private fun hugWidth(hole: Hole, content: Dp, full: Dp): Dp {
     val edge = minOf(hole.centerX.value, hole.screenW.value - hole.centerX.value)
     if (hole.screenW.value <= 0f || edge >= 60f) return full
     // The pill reaches past the camera towards the screen edge (it stops 8 dp short), and always covers the camera.
-    val pastCamera = maxOf(edge - 8f, IslandBus.camGap.value / 2 - 4f)
+    val pastCamera = maxOf(edge - IslandBus.sideGap, IslandBus.camGap.value / 2 - 4f)
     return (pastCamera.dp + IslandBus.camGap / 2 + content + 14.dp).coerceAtMost(full)
 }
 
@@ -895,8 +907,13 @@ private fun IslandState.rawDims(hole: Hole): DpSize = when (this) {
     }
     // As wide as the message needs, with the camera's gap kept clear in the middle (the text lives on the right half).
     IslandState.Alert -> DpSize((IslandBus.camGap + (IslandBus.alertText.length * 7 + 30).dp * 2).coerceIn(172.dp, 320.dp), COMPACT)
-    IslandState.Nav -> DpSize(190.dp, COMPACT)
-    IslandState.NavOpen -> DpSize(350.dp, 150.dp)
+    // The distance sits on one side of the camera, so the pill grows (both sides alike) when it is long.
+    IslandState.Nav -> {
+        val text = IslandBus.navDistance.ifEmpty { IslandBus.navTitle.take(9) }
+        DpSize((IslandBus.camGap + ((text.length * PILL_CHAR_DP) + 28f).dp * 2).coerceIn(190.dp, 300.dp), COMPACT)
+    }
+    // Tall enough for the big distance, up to three lines of instruction, the trip summary and the Exit button.
+    IslandState.NavOpen -> DpSize(350.dp, 196.dp)
     // Hugs the content: the camera's gap in the middle plus just enough on each side, not the full width.
     IslandState.Torch -> DpSize(172.dp, COMPACT)
     IslandState.TorchOpen -> DpSize(350.dp, 84.dp)
@@ -917,6 +934,7 @@ fun IslandRoot(
     hole: Hole,
     xShift: Dp,
     onRestoreWanted: (Boolean) -> Unit = {},
+    onIslandBounds: (Rect) -> Unit = {},
     onLayoutWanted: (touchable: Boolean, tall: Boolean) -> Unit,
 ) {
     val view = LocalView.current
@@ -960,6 +978,7 @@ fun IslandRoot(
     }
     LaunchedEffect(Unit) {
         var navWasHidden = false
+        var timerWasHidden = false
         while (true) {
             // Leaving Maps: the navigation island appears now (it was kept out of sight the whole time).
             val navHidden = IslandBus.hiddenByApp(IslandState.Nav)
@@ -967,6 +986,13 @@ fun IslandRoot(
                 IslandBus.state = IslandState.Nav
             }
             navWasHidden = navHidden
+            // Leaving the Clock: a stopwatch's notification never updates by itself, so nothing else would bring it up.
+            val timerHidden = IslandBus.hiddenByApp(IslandState.Timer)
+            if (timerWasHidden && !timerHidden && IslandBus.state == IslandState.Idle && IslandBus.activeList().contains(IslandState.Timer)) {
+                IslandBus.autoIdle = false
+                IslandBus.state = IslandState.Timer
+            }
+            timerWasHidden = timerHidden
             // Inside the app of the pill that is showing: if something else is going, that takes the island.
             val st = IslandBus.state
             if (IslandBus.hiddenByApp(st.base())) {
@@ -1022,7 +1048,7 @@ fun IslandRoot(
                 }
                 IslandBus.state = IslandState.Idle
             },
-            onBounds = { islandRect = it },
+            onBounds = { islandRect = it; onIslandBounds(it) },
             modifier = Modifier.align(Alignment.TopCenter),
         )
     }
@@ -1476,8 +1502,8 @@ fun Island(
         val want = if (state.isTall() || splitOn) 0f else if (dotsLeft) -dotsReach / 2 else dotsReach / 2
         val lim = (w / 2 - (camD.value / 2 + 4f)).coerceAtLeast(0f)
         if (screenWv <= 0f) want.coerceIn(-lim, lim) else {
-            val low = 8f - camX + w / 2            // the furthest left the middle can go (left edge 8 dp from the screen's edge)
-            val high = (screenWv - 8f - camX) - w / 2
+            val low = IslandBus.sideGap - camX + w / 2   // the furthest left the middle can go (left edge sideGap dp from the screen's edge)
+            val high = (screenWv - IslandBus.sideGap - camX) - w / 2
             val fit = if (low > high) low else want.coerceIn(low, high)
             fit.coerceIn(-lim, lim)
         }
@@ -1587,7 +1613,9 @@ fun Island(
 
     // Opening something: the part being opened is the one that grows. If it was the small pill, the island starts
     // from there. The other part simply fades away.
-    LaunchedEffect(state, splitOn, bubblePhase, IslandBus.compactH, dotsReach, IslandBus.callExtra, pillW.value) {
+    // (The target size is a key too: one alert replacing another, Silent then Do Not Disturb say, keeps the same state
+    // but needs a different width.)
+    LaunchedEffect(state, splitOn, bubblePhase, IslandBus.compactH, dotsReach, IslandBus.callExtra, pillW.value, dims.width.value, dims.height.value) {
         val open = state.isTall()
         val fromBubble = open && prev.splitOn && prev.secondary == state.base()
         val fromMain = open && prev.splitOn && !fromBubble
@@ -1807,6 +1835,8 @@ fun Island(
                     .then(
                         if (outline && state == IslandState.Idle)
                             Modifier.border(BorderStroke(1.dp, Color.Red), RoundedCornerShape(corner))
+                        else if (IslandBus.edgeOutline && state != IslandState.Idle)
+                            Modifier.border(BorderStroke(1.dp, EdgeColor), RoundedCornerShape(corner))
                         else Modifier,
                     ),
                 contentAlignment = Alignment.Center,
@@ -1911,7 +1941,8 @@ fun Island(
                             scaleY = k
                         }
                         .alpha(if (demoteNow) 1f else bubbleAlpha.value)
-                        .clip(RoundedCornerShape(COMPACT / 2)).background(Color.Black),
+                        .clip(RoundedCornerShape(COMPACT / 2)).background(Color.Black)
+                        .then(if (IslandBus.edgeOutline) Modifier.border(BorderStroke(1.dp, EdgeColor), RoundedCornerShape(COMPACT / 2)) else Modifier),
                     contentAlignment = Alignment.Center,
                 ) { MiniActivity(bubbleShown) }
             }
