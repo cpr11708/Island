@@ -657,7 +657,8 @@ private fun IslandPreview(
     val islandW = minOf(OPEN_MAX_W, screenW - 2 * gap)
     val islandH = 130f
     val top = (camY - compactH / 2f).coerceAtLeast(0f)
-    val left = (camX - islandW / 2f).coerceIn(gap, screenW - gap - islandW)
+    // (When the island fills the width the two limits are the same, give or take a rounding error: never let them cross.)
+    val left = (camX - islandW / 2f).coerceIn(gap, maxOf(gap, screenW - gap - islandW))
     val shownH = top + islandH + 40f // how much of the screen's top the preview shows
     val screenColor = MaterialTheme.colorScheme.surface
     val edgeColor = MaterialTheme.colorScheme.outline

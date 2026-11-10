@@ -290,7 +290,11 @@ object IslandBus {
                 timerPaused = false
                 timerActions = listOf(CallAction("Pause", false, null), CallAction("Stop", false, null))
             }
-            else -> state = IslandState.Idle
+            else -> {
+                // Stopped: the demo timer ends, and the island goes back to whatever else is going on.
+                timerKey = ""
+                state = restingState()
+            }
         }
     }
 
@@ -1834,7 +1838,8 @@ fun Island(
     val centre = (l + r) / 2
     // While gliding to a new camera spot, the content is laid out as if the island were already there (it just rides along).
     IslandBus.pillCentre = if (gliding) centre - (leftNow - targetLeft) else centre
-    val corner = minOf(h / 2, IslandBus.openCorner(hole.edgeGap())).dp
+    // (The height's spring can overshoot below zero for a moment: a corner can never be negative.)
+    val corner = minOf(h / 2, IslandBus.openCorner(hole.edgeGap())).coerceAtLeast(0f).dp
     val privOn = privAnim > 0.01f
     // The touch box reaches from the island's left end to its right end (the dots pill and the small pill included), so it
     // can sit off-centre when the camera is not in the middle. Its middle is [boxCentre] dp from the camera.
@@ -1973,7 +1978,7 @@ fun Island(
                         )
                         // requiredSize: exactly this size, whatever space the layout around it offers.
                         .requiredSize((pr - pl).dp, pillH.dp)
-                        .clip(RoundedCornerShape((pillH / 2).dp)).background(Color.Black),
+                        .clip(RoundedCornerShape((pillH / 2).coerceAtLeast(0f).dp)).background(Color.Black),
                 ) {
                     PrivacyDots(
                         privCam, privMic, privRec, privHot,

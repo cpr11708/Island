@@ -239,8 +239,16 @@ class IslandAccessibilityService : AccessibilityService() {
         // Ask Android which window is really in front. Some phones only report the app launcher or recents in the event.
         val pkg = runCatching { rootInActiveWindow?.packageName?.toString() }.getOrNull()
             ?: event.packageName?.toString() ?: return
-        // Ignore Island itself, system pop-ups (shade, volume) and keyboards: none of them mean you changed app.
-        if (pkg == packageName || pkg == "com.android.systemui" || pkg == "android" ||
+        // Island's own settings screen is an app like any other (so leaving the Clock for it shows the timer again),
+        // but the island's own windows are not.
+        if (pkg == packageName) {
+            if (type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && event.className?.toString()?.endsWith("Activity") == true) {
+                IslandBus.foregroundPackage = pkg
+            }
+            return
+        }
+        // Ignore system pop-ups (shade, volume) and keyboards: none of them mean you changed app.
+        if (pkg == "com.android.systemui" || pkg == "android" ||
             pkg.contains("inputmethod") || pkg.contains("keyboard") || pkg.contains("honeyboard")
         ) return
         IslandBus.foregroundPackage = pkg
