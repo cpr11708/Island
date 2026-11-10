@@ -309,6 +309,10 @@ object IslandBus {
 
     /** Gap the camera leaves between the two halves of an open island, in dp (set by the island). */
     var camGap by mutableStateOf(46.dp)
+    /** The screen the island is drawn on and its own camera (what Auto uses), in dp, for the settings screen's preview. */
+    var screenWdp by androidx.compose.runtime.mutableFloatStateOf(0f)
+    var autoCamX by androidx.compose.runtime.mutableFloatStateOf(0f)
+    var autoCamY by androidx.compose.runtime.mutableFloatStateOf(0f)
     /** The screen's own corner radius in dp, as Android reports it (0 when the screen has square corners or says nothing). */
     var screenCorner by androidx.compose.runtime.mutableFloatStateOf(0f)
     /** True: an expanded island's corners match the screen's. False: they use [cornerCustom] (the "corners" setting). */

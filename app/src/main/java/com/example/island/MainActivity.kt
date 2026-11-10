@@ -14,6 +14,10 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.border
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -55,6 +59,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -273,7 +278,6 @@ private fun SetupScreen() {
                 PrefSwitch(context, "Camera and microphone dots", "A green or orange dot beside the camera while one is in use.", "privacy_dots", IslandBus.privacyEnabled) { IslandBus.privacyEnabled = it }
                 PrefSwitch(context, "Recording and hotspot dots", "Red while the screen is recorded, green while the hotspot is on.", "status_pills", IslandBus.statusPills) { IslandBus.statusPills = it }
                 PrefSwitch(context, "Outline", "A faint grey edge around the island while it shows something, so it stays visible on black screens.", "island_outline", IslandBus.edgeOutline) { IslandBus.edgeOutline = it }
-                CornerSetting(context)
                 PrefSwitch(context, "Music on the lock screen", "A music player near the bottom while locked and playing.", "lock_player", IslandBus.lockPlayer) { IslandBus.lockPlayer = it }
                 Text(
                     "Touch and hold the lock screen player, then drag, to move it. Tap the handle at its top, or swipe it down, to shrink it.",
@@ -284,39 +288,9 @@ private fun SetupScreen() {
                 }) { Text("Put the player back in its usual place") }
             }
         }
-        // ---- Positioning
-        Heading("Positioning")
-        Card {
-            val prefs = context.getSharedPreferences("island", Context.MODE_PRIVATE)
-            var mode by remember(IslandBus.camVersion) { mutableStateOf(prefs.getString("cam_pos", "auto") ?: "auto") }
-            fun choose(m: String) {
-                mode = m
-                prefs.edit().putString("cam_pos", m).apply()
-                IslandBus.rebuildOverlay?.invoke()
-            }
-            @Composable
-            fun Pick(label: String, m: String) {
-                if (mode == m) Button(onClick = { choose(m) }) { Text(label) }
-                else OutlinedButton(onClick = { choose(m) }) { Text(label) }
-            }
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(
-                    "Where the island sits. Auto reads the phone's own camera cutout. Pick a place here if the island is in the " +
-                            "wrong spot, or choose Custom to place it yourself.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp,
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Pick("Auto", "auto"); Pick("Left corner", "left_corner"); Pick("Left", "left")
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Pick("Centre", "center"); Pick("Right", "right"); Pick("Right corner", "right_corner")
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Pick("Custom", "custom")
-                    if (mode == "custom") Button(onClick = { IslandBus.startCameraEdit?.invoke() }) { Text("Edit") }
-                }
-            }
-        }
+        // ---- Where the island sits and how round it is
+        Heading("Position and shape")
+        Card { PositionAndShape(context) }
         Text(
             "Tap a compact island to open it, tap again to close it, and swipe it up to dismiss it. " +
                     "Touch the camera to bring a dismissed one back.",
@@ -515,35 +489,213 @@ private fun Step(done: Boolean, title: String, text: String, button: String?, on
     }
 }
 
+/** The ready-made spots, as (preference value, name, where the camera is in dp on a screen [w] dp wide). */
+private fun presetSpots(w: Float) = listOf(
+    Triple("left_corner", "Left corner", 30f),
+    Triple("left", "Left", w * 0.25f),
+    Triple("center", "Centre", w * 0.5f),
+    Triple("right", "Right", w * 0.75f),
+    Triple("right_corner", "Right corner", w - 30f),
+)
+
 /**
- * How round an expanded island's corners are: matching the screen's own corners (read from the screen), or a size
- * the person picks with a slider.
+ * Where the island sits and how round an expanded island is, around one to-scale preview of the top of the screen:
+ * its rounded corners, the camera, and an expanded island drawn around it. Tapping the preview picks the nearest
+ * ready-made spot; the corner slider redraws it as it moves.
  */
 @Composable
-private fun CornerSetting(context: Context) {
+private fun PositionAndShape(context: Context) {
     val prefs = context.getSharedPreferences("island", Context.MODE_PRIVATE)
-    val screen = IslandBus.screenCorner
-    PrefSwitch(
-        context, "Match the screen's corners",
-        when {
-            screen > 0f -> "An expanded island's corners follow the rounded corners of your screen (${screen.roundToInt()} dp)."
-            IslandBus.rebuildOverlay == null -> "Turn the island on first, so it can read your screen's corners."
-            else -> "Your screen reports square corners, so an expanded island uses the usual ${OPEN_CORNER.value.roundToInt()} dp. Turn this off to pick your own."
-        },
-        "corner_auto", IslandBus.cornerAuto,
-    ) { IslandBus.cornerAuto = it }
-    if (!IslandBus.cornerAuto) {
-        Column {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Expanded corners", fontSize = 15.sp, modifier = Modifier.weight(1f))
-                Text("${IslandBus.cornerCustom.roundToInt()} dp", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
+    var mode by remember(IslandBus.camVersion) { mutableStateOf(prefs.getString("cam_pos", "auto") ?: "auto") }
+    fun choose(m: String) {
+        mode = m
+        prefs.edit().putString("cam_pos", m).apply()
+        IslandBus.rebuildOverlay?.invoke()
+    }
+
+    // The screen the island is on. Until the island has started, this screen's own size and camera stand in.
+    val view = androidx.compose.ui.platform.LocalView.current
+    val config = androidx.compose.ui.platform.LocalConfiguration.current
+    val density = androidx.compose.ui.platform.LocalDensity.current.density
+    val ownCutout = remember(view) { view.rootWindowInsets?.displayCutout?.boundingRectTop }
+    val ownCorner = remember(view) {
+        (view.rootWindowInsets?.getRoundedCorner(android.view.RoundedCorner.POSITION_TOP_LEFT)?.radius ?: 0) / density
+    }
+    val running = IslandBus.screenWdp > 0f
+    val screenW = if (running) IslandBus.screenWdp else config.screenWidthDp.toFloat()
+    val autoX = if (running) IslandBus.autoCamX else ownCutout?.let { it.exactCenterX() / density } ?: (screenW / 2f)
+    val autoY = if (running) IslandBus.autoCamY else ownCutout?.let { (it.bottom - minOf(it.width(), it.height()) / 2f) / density } ?: 20f
+    val screenCorner = if (running) IslandBus.screenCorner else ownCorner
+
+    @Suppress("UNUSED_VARIABLE") val camVersion = IslandBus.camVersion // re-read the Custom spot after the editor saves it
+    val spots = presetSpots(screenW)
+    val camX = when (mode) {
+        "auto" -> autoX
+        "custom" -> screenW * prefs.getFloat("cam_x_pct", 50f) / 100f
+        else -> spots.firstOrNull { it.first == mode }?.third ?: autoX
+    }
+    val camY = if (mode == "custom" && prefs.getBoolean("cam_y_on", false)) prefs.getFloat("cam_y_dp", 20f) else autoY
+    val compactH = if (mode == "custom") prefs.getFloat("island_h", 36f) else 36f
+    val gap = if (mode == "custom") 0f else 8f
+    // The corner the island will use (the same rule as the island itself, see IslandBus.openCorner).
+    val corner = (if (!IslandBus.cornerAuto) IslandBus.cornerCustom else if (screenCorner > 0f) screenCorner else OPEN_CORNER.value)
+        .coerceAtLeast(compactH / 2f)
+    val corners = androidx.compose.animation.core.animateFloatAsState(corner, label = "preview corner").value
+    val islandX = androidx.compose.animation.core.animateFloatAsState(camX, label = "preview spot").value
+
+    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        IslandPreview(
+            screenW = screenW, screenCorner = screenCorner, camX = islandX, camY = camY, compactH = compactH, gap = gap,
+            corner = corners, spots = spots.map { it.third }, chosen = spots.indexOfFirst { it.first == mode },
+            onTap = { x -> choose(spots.minBy { kotlin.math.abs(it.third - x) }.first) },
+        )
+        Text(
+            when (mode) {
+                "auto" -> "Auto: the island sits over your phone's own camera. Tap a spot above to move it somewhere else."
+                "custom" -> "Custom: you set where the camera is and how tall the island is."
+                else -> "${spots.first { it.first == mode }.second}. Tap another spot to move it, or pick Auto or Custom."
+            },
+            color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp,
+        )
+        Segmented(
+            options = listOf("Auto", spots.firstOrNull { it.first == mode }?.second ?: "Spot", "Custom"),
+            selected = when (mode) { "auto" -> 0; "custom" -> 2; else -> 1 },
+        ) { i ->
+            when (i) {
+                0 -> choose("auto")
+                1 -> if (mode == "auto" || mode == "custom") choose("center")
+                else -> choose("custom")
             }
-            Slider(
-                value = IslandBus.cornerCustom,
-                onValueChange = { IslandBus.cornerCustom = it.roundToInt().toFloat() },
-                onValueChangeFinished = { prefs.edit().putFloat("corner_dp", IslandBus.cornerCustom).apply() },
-                valueRange = 18f..64f,
+        }
+        if (mode == "custom") {
+            OutlinedButton(onClick = { IslandBus.startCameraEdit?.invoke() }, modifier = Modifier.fillMaxWidth()) {
+                Text("Edit position and height")
+            }
+        }
+
+        Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)))
+
+        PrefSwitch(
+            context, "Match the screen's corners",
+            when {
+                !IslandBus.cornerAuto -> "Off: pick the corner size below." +
+                        (if (screenCorner > 0f) " Your screen's corners are ${screenCorner.roundToInt()} dp." else "")
+                screenCorner > 0f -> "An expanded island's corners follow your screen's rounded corners (${screenCorner.roundToInt()} dp)."
+                else -> "Your screen reports square corners, so an expanded island uses ${OPEN_CORNER.value.roundToInt()} dp. Turn this off to pick your own."
+            },
+            "corner_auto", IslandBus.cornerAuto,
+        ) { IslandBus.cornerAuto = it }
+        if (!IslandBus.cornerAuto) {
+            Column {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Corner size", fontSize = 15.sp, modifier = Modifier.weight(1f))
+                    Text("${IslandBus.cornerCustom.roundToInt()} dp", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
+                }
+                Slider(
+                    value = IslandBus.cornerCustom,
+                    onValueChange = { IslandBus.cornerCustom = it.roundToInt().toFloat() },
+                    onValueChangeFinished = { prefs.edit().putFloat("corner_dp", IslandBus.cornerCustom).apply() },
+                    valueRange = 18f..64f,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * The top of the screen, to scale: its outline with its own rounded corners, faint dots at the ready-made spots, and an
+ * expanded island over the camera with the corners it will have. It fades out downwards, as the screen goes on.
+ */
+@Composable
+private fun IslandPreview(
+    screenW: Float, screenCorner: Float, camX: Float, camY: Float, compactH: Float, gap: Float, corner: Float,
+    spots: List<Float>, chosen: Int, onTap: (Float) -> Unit,
+) {
+    // A representative expanded island (about the size of the music player).
+    val islandW = minOf(350f, screenW - 2 * gap)
+    val islandH = 130f
+    val top = (camY - compactH / 2f).coerceAtLeast(0f)
+    val left = (camX - islandW / 2f).coerceIn(gap, screenW - gap - islandW)
+    val shownH = top + islandH + 40f // how much of the screen's top the preview shows
+    val screenColor = MaterialTheme.colorScheme.surface
+    val edgeColor = MaterialTheme.colorScheme.outline
+    val spotColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val chosenColor = MaterialTheme.colorScheme.primary
+    androidx.compose.foundation.Canvas(
+        Modifier.fillMaxWidth().aspectRatio(screenW / shownH)
+            // Drawn on its own layer so the bottom can fade out to nothing (the screen carries on below).
+            .graphicsLayer { compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen; clip = true }
+            .pointerInput(screenW) { detectTapGestures { p -> onTap(p.x / size.width * screenW) } },
+    ) {
+        val k = size.width / screenW // pixels per dp of the real screen
+        val r = screenCorner * k
+        // The screen: a rounded top, straight sides that run off the bottom.
+        val screen = androidx.compose.ui.graphics.Path().apply {
+            addRoundRect(
+                androidx.compose.ui.geometry.RoundRect(
+                    0.75.dp.toPx(), 0.75.dp.toPx(), size.width - 0.75.dp.toPx(), size.height + r + 4.dp.toPx(),
+                    androidx.compose.ui.geometry.CornerRadius(r, r),
+                ),
             )
+        }
+        drawPath(screen, screenColor)
+        drawPath(screen, edgeColor.copy(alpha = 0.7f), style = androidx.compose.ui.graphics.drawscope.Stroke(1.5.dp.toPx()))
+        // The expanded island, with a faint edge as on the phone.
+        val cr = minOf(corner, islandH / 2f) * k
+        drawRoundRect(
+            Color.Black, topLeft = androidx.compose.ui.geometry.Offset(left * k, top * k),
+            size = androidx.compose.ui.geometry.Size(islandW * k, islandH * k),
+            cornerRadius = androidx.compose.ui.geometry.CornerRadius(cr, cr),
+        )
+        drawRoundRect(
+            Color(0xFF3A3A3C), topLeft = androidx.compose.ui.geometry.Offset(left * k, top * k),
+            size = androidx.compose.ui.geometry.Size(islandW * k, islandH * k),
+            cornerRadius = androidx.compose.ui.geometry.CornerRadius(cr, cr),
+            style = androidx.compose.ui.graphics.drawscope.Stroke(1.dp.toPx()),
+        )
+        // The camera, inside the island.
+        drawCircle(Color(0xFF1E1E22), radius = 6.dp.toPx(), center = androidx.compose.ui.geometry.Offset(camX * k, camY * k))
+        // The ready-made spots (where the camera would be for each), on top so they show over the island too:
+        // rings, and a filled dot for the chosen one.
+        spots.forEachIndexed { i, x ->
+            val c = androidx.compose.ui.geometry.Offset(x * k, camY * k)
+            if (i == chosen) drawCircle(chosenColor, radius = 5.dp.toPx(), center = c)
+            else drawCircle(
+                spotColor.copy(alpha = 0.6f), radius = 4.dp.toPx(), center = c,
+                style = androidx.compose.ui.graphics.drawscope.Stroke(1.5.dp.toPx()),
+            )
+        }
+        // Fade the bottom out, as the screen carries on below.
+        drawRect(
+            androidx.compose.ui.graphics.Brush.verticalGradient(
+                listOf(Color.Black, Color.Transparent), startY = size.height * 0.7f, endY = size.height,
+            ),
+            blendMode = androidx.compose.ui.graphics.BlendMode.DstIn,
+        )
+    }
+}
+
+/** A row of joined buttons, one of them chosen. */
+@Composable
+private fun Segmented(options: List<String>, selected: Int, onPick: (Int) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(50)).background(MaterialTheme.colorScheme.surface).padding(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        options.forEachIndexed { i, label ->
+            val on = i == selected
+            Box(
+                Modifier.weight(1f).height(40.dp).clip(RoundedCornerShape(50))
+                    .background(if (on) MaterialTheme.colorScheme.primary else Color.Transparent)
+                    .clickable { onPick(i) },
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    label, fontSize = 14.sp, maxLines = 1,
+                    fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal,
+                    color = if (on) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+                )
+            }
         }
     }
 }

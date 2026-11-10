@@ -157,6 +157,9 @@ class IslandOverlay(private val context: Context, private val windowType: Int) {
         } else hole1
         lastHole = hole
         autoHole = hole0
+        IslandBus.screenWdp = screenWdpAll
+        IslandBus.autoCamX = hole0.centerX.value
+        IslandBus.autoCamY = hole0.centerY.value
         // The island's height only applies when the position is Custom.
         IslandBus.compactH = if (camPrefs.getString("cam_pos", "auto") == "custom") camPrefs.getFloat("island_h", 36f) else 36f
         // The screen's rounded corners (the larger of the two top ones), so an expanded island can match them.
