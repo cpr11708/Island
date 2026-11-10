@@ -265,7 +265,7 @@ private fun SetupScreen() {
                 Step(
                     done = btGranted,
                     title = "Bluetooth names (optional)",
-                    text = "Shows the name of a device when it connects.",
+                    text = "Shows the name of a device when it connects, and keeps pop-ups to the devices in your Bluetooth settings.",
                     button = if (btGranted) null else "Allow",
                 ) { btPermission.launch(Manifest.permission.BLUETOOTH_CONNECT) }
             }

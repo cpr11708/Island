@@ -66,6 +66,7 @@ class SystemEventMonitor(private val context: Context) {
                     } else {
                         @Suppress("DEPRECATION") intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
                     }
+                    if (!isPaired(device)) return
                     // The name needs the Bluetooth permission. Without it, just say a device connected.
                     val name = runCatching { device?.name }.getOrNull()?.takeIf { it.isNotBlank() } ?: "Bluetooth device"
                     btAlertKey = -1
@@ -85,6 +86,7 @@ class SystemEventMonitor(private val context: Context) {
                     } else {
                         @Suppress("DEPRECATION") intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
                     }
+                    if (!isPaired(device)) return
                     val name = runCatching { device?.name }.getOrNull()?.takeIf { it.isNotBlank() } ?: "Bluetooth device"
                     IslandBus.showDevice(name, false)
                 }
@@ -93,6 +95,16 @@ class SystemEventMonitor(private val context: Context) {
     }
 
     private val clearWake = Runnable { IslandBus.wakeSnap = false }
+
+    /**
+     * Only devices in the phone's Bluetooth settings (paired ones) get a pop-up. Apps like Spotify also open short
+     * Bluetooth links to nearby phones and speakers they have found, and those are not worth a pop-up. Telling them
+     * apart needs the Bluetooth permission; without it every device counts, as before.
+     */
+    private fun isPaired(device: BluetoothDevice?): Boolean {
+        if (device == null) return false
+        return runCatching { device.bondState == BluetoothDevice.BOND_BONDED }.getOrDefault(true)
+    }
 
     /** The key of the Bluetooth pop-up that is waiting for a battery level. */
     private var btAlertKey = -1
