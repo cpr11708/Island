@@ -35,6 +35,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Slider
+import kotlin.math.roundToInt
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -271,6 +273,7 @@ private fun SetupScreen() {
                 PrefSwitch(context, "Camera and microphone dots", "A green or orange dot beside the camera while one is in use.", "privacy_dots", IslandBus.privacyEnabled) { IslandBus.privacyEnabled = it }
                 PrefSwitch(context, "Recording and hotspot dots", "Red while the screen is recorded, green while the hotspot is on.", "status_pills", IslandBus.statusPills) { IslandBus.statusPills = it }
                 PrefSwitch(context, "Outline", "A faint grey edge around the island while it shows something, so it stays visible on black screens.", "island_outline", IslandBus.edgeOutline) { IslandBus.edgeOutline = it }
+                CornerSetting(context)
                 PrefSwitch(context, "Music on the lock screen", "A music player near the bottom while locked and playing.", "lock_player", IslandBus.lockPlayer) { IslandBus.lockPlayer = it }
                 Text(
                     "Touch and hold the lock screen player, then drag, to move it. Tap the handle at its top, or swipe it down, to shrink it.",
@@ -508,6 +511,39 @@ private fun Step(done: Boolean, title: String, text: String, button: String?, on
                 Spacer(Modifier.height(6.dp))
                 Button(onClick = onClick) { Text(button) }
             }
+        }
+    }
+}
+
+/**
+ * How round an expanded island's corners are: matching the screen's own corners (read from the screen), or a size
+ * the person picks with a slider.
+ */
+@Composable
+private fun CornerSetting(context: Context) {
+    val prefs = context.getSharedPreferences("island", Context.MODE_PRIVATE)
+    val screen = IslandBus.screenCorner
+    PrefSwitch(
+        context, "Match the screen's corners",
+        when {
+            screen > 0f -> "An expanded island's corners follow the rounded corners of your screen (${screen.roundToInt()} dp)."
+            IslandBus.rebuildOverlay == null -> "Turn the island on first, so it can read your screen's corners."
+            else -> "Your screen reports square corners, so an expanded island uses the usual ${OPEN_CORNER.value.roundToInt()} dp. Turn this off to pick your own."
+        },
+        "corner_auto", IslandBus.cornerAuto,
+    ) { IslandBus.cornerAuto = it }
+    if (!IslandBus.cornerAuto) {
+        Column {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Expanded corners", fontSize = 15.sp, modifier = Modifier.weight(1f))
+                Text("${IslandBus.cornerCustom.roundToInt()} dp", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
+            }
+            Slider(
+                value = IslandBus.cornerCustom,
+                onValueChange = { IslandBus.cornerCustom = it.roundToInt().toFloat() },
+                onValueChangeFinished = { prefs.edit().putFloat("corner_dp", IslandBus.cornerCustom).apply() },
+                valueRange = 18f..64f,
+            )
         }
     }
 }

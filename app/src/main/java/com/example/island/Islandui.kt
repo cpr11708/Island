@@ -309,6 +309,15 @@ object IslandBus {
 
     /** Gap the camera leaves between the two halves of an open island, in dp (set by the island). */
     var camGap by mutableStateOf(46.dp)
+    /** The screen's own corner radius in dp, as Android reports it (0 when the screen has square corners or says nothing). */
+    var screenCorner by androidx.compose.runtime.mutableFloatStateOf(0f)
+    /** True: an expanded island's corners match the screen's. False: they use [cornerCustom] (the "corners" setting). */
+    var cornerAuto by mutableStateOf(true)
+    var cornerCustom by androidx.compose.runtime.mutableFloatStateOf(OPEN_CORNER.value)
+    /** The corner radius (dp) of an expanded island. Never under half a compact pill's height, so the pill stays round. */
+    val openCorner: Float
+        get() = (if (!cornerAuto) cornerCustom else if (screenCorner > 0f) screenCorner else OPEN_CORNER.value)
+            .coerceAtLeast(compactH / 2f)
     /** Where the middle of the island is, in dp from the camera's centre (not zero when the camera is off to one side). */
     var pillCentre by androidx.compose.runtime.mutableFloatStateOf(0f)
     /** Where the middle of the small touch window is, in dp from the camera's centre. */
@@ -1777,7 +1786,7 @@ fun Island(
     val centre = (l + r) / 2
     // While gliding to a new camera spot, the content is laid out as if the island were already there (it just rides along).
     IslandBus.pillCentre = if (gliding) centre - (leftNow - targetLeft) else centre
-    val corner = minOf(h / 2, OPEN_CORNER.value).dp
+    val corner = minOf(h / 2, IslandBus.openCorner).dp
     val privOn = privAnim > 0.01f
     // The touch box reaches from the island's left end to its right end (the dots pill and the small pill included), so it
     // can sit off-centre when the camera is not in the middle. Its middle is [boxCentre] dp from the camera.

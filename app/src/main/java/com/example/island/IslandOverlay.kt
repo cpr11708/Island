@@ -159,6 +159,10 @@ class IslandOverlay(private val context: Context, private val windowType: Int) {
         autoHole = hole0
         // The island's height only applies when the position is Custom.
         IslandBus.compactH = if (camPrefs.getString("cam_pos", "auto") == "custom") camPrefs.getFloat("island_h", 36f) else 36f
+        // The screen's rounded corners (the larger of the two top ones), so an expanded island can match them.
+        val cornerPx = listOf(android.view.RoundedCorner.POSITION_TOP_LEFT, android.view.RoundedCorner.POSITION_TOP_RIGHT)
+            .maxOfOrNull { metrics.windowInsets.getRoundedCorner(it)?.radius ?: 0 } ?: 0
+        IslandBus.screenCorner = cornerPx / density
         IslandBus.sideGap = if (camPrefs.getString("cam_pos", "auto") == "custom") 0f else 8f
         // The main window is as wide as the screen (but no wider than the widest island plus its touch margin).
         val tallWidthDp = (screenW / density).coerceIn(380f, 508f)
